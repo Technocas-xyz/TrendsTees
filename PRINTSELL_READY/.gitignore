@@ -1,0 +1,11 @@
+node_modules
+.next
+data/auth.json
+*.log
+.env*
+
+# Local image library (do not commit uploaded user media)
+/data/design-library/
+.env.local
+
+.vercel

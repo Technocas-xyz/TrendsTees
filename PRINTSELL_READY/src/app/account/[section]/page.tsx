@@ -1,0 +1,2 @@
+import {notFound} from 'next/navigation';import {currentUser} from '@/lib/auth';import AccountDashboard from '@/components/AccountDashboard';
+export const runtime='nodejs';export default async function Page({params}:{params:Promise<{section:string}>}){const {section}=await params; if(!['orders','wishlist','addresses','profile','settings'].includes(section))notFound();const user=await currentUser();return <AccountDashboard user={{name:user!.name,email:user!.email}} section={section}/>;}
