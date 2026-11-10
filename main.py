@@ -1,0 +1,734 @@
+
+import os
+import uuid
+from contextlib import contextmanager
+
+import psycopg
+from psycopg.rows import dict_row
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+load_dotenv()
+
+app = FastAPI(title="TrendsTees API")
+
+# Allow the Next.js dev server to call this API from the browser
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["*"],
+)
+
+# Serve design images from the media folder next to main.py (works from any start directory)
+MEDIA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "media")
+app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
+
+
+@contextmanager
+def get_connection():
+    with psycopg.connect(
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT", "5432"),
+        dbname=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        row_factory=dict_row,
+        connect_timeout=5,
+    ) as conn:
+        yield conn
+
+
+@app.get("/")
+def home():
+    return {"message": "TrendsTees Backend is running!"}
+
+
+@app.get("/products")
+def get_products():
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT
+                        product_id,
+                        product_code,
+                        product_name,
+                        product_type,
+                        product_status
+                    FROM products
+                    WHERE product_status = 'active'
+                    ORDER BY product_id
+                """)
+                return cursor.fetchall()
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.get("/products/{product_id}/variants")
+def get_product_variants(product_id: int):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Step 1: make sure the product exists and is active
+                cursor.execute(
+                    """
+                    SELECT product_id, product_name
+                    FROM products
+                    WHERE product_id = %s AND product_status = 'active'
+                    """,
+                    (product_id,),
+                )
+                product = cursor.fetchone()
+
+                if product is None:
+                    raise HTTPException(status_code=404, detail="Product not found")
+
+                # Step 2: get the active variants for this product
+                cursor.execute(
+                    """
+                    SELECT
+                        product_variant_id,
+                        sku,
+                        color_name,
+                        color_hex,
+                        size_code,
+                        customer_price
+                    FROM product_variants
+                    WHERE product_id = %s AND variant_status = 'active'
+                    ORDER BY color_name, size_code
+                    """,
+                    (product_id,),
+                )
+                variants = cursor.fetchall()
+
+                # Step 3: return product info plus its variants
+                return {"product": product, "variants": variants}
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.get("/interests")
+def get_interests(trending: bool = False):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Top-level active categories; when trending=true, keep only trending ones
+                cursor.execute(
+                    """
+                    SELECT
+                        c.category_id,
+                        c.category_name,
+                        c.category_slug,
+                        c.description,
+                        cover.cover_url,
+                        (
+                            -- published designs in this interest or any of its niches
+                            SELECT COUNT(*)
+                            FROM designs d
+                            JOIN categories dc ON dc.category_id = d.category_id
+                            WHERE d.design_status = 'published'
+                              AND (dc.category_id = c.category_id
+                                   OR dc.parent_category_id = c.category_id)
+                        ) AS design_count
+                    FROM categories c
+                    LEFT JOIN LATERAL (
+                        -- preview image of the most recently published design
+                        SELECT '/media/' || f.storage_key AS cover_url
+                        FROM designs d
+                        JOIN categories dc ON dc.category_id = d.category_id
+                        JOIN files f ON f.file_id = d.preview_file_id
+                        WHERE d.design_status = 'published'
+                          AND (dc.category_id = c.category_id
+                               OR dc.parent_category_id = c.category_id)
+                        ORDER BY d.first_published_at DESC NULLS LAST, d.design_id DESC
+                        LIMIT 1
+                    ) cover ON true
+                    WHERE c.parent_category_id IS NULL
+                      AND c.category_status = 'active'
+                      AND (%s = false OR c.is_trending = true)
+                    ORDER BY c.display_order, c.category_name
+                    """,
+                    (trending,),
+                )
+                return cursor.fetchall()
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.get("/interests/{category_slug}/niches")
+def get_interest_niches(category_slug: str):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Step 1: find the active top-level interest by slug (case-insensitive)
+                cursor.execute(
+                    """
+                    SELECT
+                        category_id,
+                        category_name,
+                        category_slug,
+                        description
+                    FROM categories
+                    WHERE lower(category_slug) = lower(%s)
+                      AND parent_category_id IS NULL
+                      AND category_status = 'active'
+                    """,
+                    (category_slug,),
+                )
+                interest = cursor.fetchone()
+
+                if interest is None:
+                    raise HTTPException(status_code=404, detail="Interest not found")
+
+                # Step 2: get the active niches under this interest
+                cursor.execute(
+                    """
+                    SELECT
+                        category_id,
+                        category_name,
+                        category_slug,
+                        description
+                    FROM categories
+                    WHERE parent_category_id = %s
+                      AND category_status = 'active'
+                    ORDER BY display_order, category_name
+                    """,
+                    (interest["category_id"],),
+                )
+                niches = cursor.fetchall()
+
+                # Step 3: return the interest plus its niches
+                return {"interest": interest, "niches": niches}
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.get("/designs")
+def get_designs(
+    category_slug: str | None = None,
+    search: str | None = Query(default=None, max_length=100),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    # Build the ILIKE pattern in Python and pass it as a parameter (None = no search)
+    search_pattern = f"%{search}%" if search else None
+    # Treat an empty slug as "no filter"
+    slug = category_slug if category_slug else None
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Published designs; category filter matches the category itself
+                # or its parent (so an interest includes all its niches)
+                cursor.execute(
+                    """
+                    SELECT
+                        d.design_id,
+                        d.public_design_code,
+                        d.title,
+                        d.preview_file_id,
+                        CASE WHEN f.storage_key IS NULL THEN NULL
+                             ELSE '/media/' || f.storage_key END AS preview_url,
+                        c.category_name,
+                        d.first_published_at,
+                        (
+                            -- cheapest active variant of an active, enabled product
+                            SELECT MIN(pv.customer_price)
+                            FROM design_product_settings dps
+                            JOIN products p ON p.product_id = dps.product_id
+                            JOIN product_variants pv ON pv.product_id = p.product_id
+                            WHERE dps.design_id = d.design_id
+                              AND dps.is_enabled = true
+                              AND p.product_status = 'active'
+                              AND pv.variant_status = 'active'
+                        ) AS starting_price
+                    FROM designs d
+                    LEFT JOIN files f ON f.file_id = d.preview_file_id
+                    LEFT JOIN categories c ON c.category_id = d.category_id
+                    LEFT JOIN categories pc ON pc.category_id = c.parent_category_id
+                    WHERE d.design_status = 'published'
+                      AND (%s::text IS NULL
+                           OR lower(c.category_slug) = lower(%s)
+                           OR lower(pc.category_slug) = lower(%s))
+                      AND (%s::text IS NULL OR d.title ILIKE %s)
+                    ORDER BY d.first_published_at DESC NULLS LAST, d.design_id DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (slug, slug, slug, search_pattern, search_pattern, limit, offset),
+                )
+                rows = cursor.fetchall()
+
+                # Remove the internal design_id from the response (only used for ordering)
+                for row in rows:
+                    row.pop("design_id")
+
+                return {"items": rows, "limit": limit, "offset": offset}
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.get("/designs/{public_design_code}")
+def get_design(public_design_code: uuid.UUID):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Step 1: find the published design by its public code
+                cursor.execute(
+                    """
+                    SELECT
+                        d.design_id,
+                        d.public_design_code,
+                        d.title,
+                        d.description,
+                        d.preview_file_id,
+                        CASE WHEN f.storage_key IS NULL THEN NULL
+                             ELSE '/media/' || f.storage_key END AS preview_url,
+                        d.content_rating,
+                        c.category_name,
+                        c.category_slug
+                    FROM designs d
+                    LEFT JOIN files f ON f.file_id = d.preview_file_id
+                    LEFT JOIN categories c ON c.category_id = d.category_id
+                    WHERE d.public_design_code = %s
+                      AND d.design_status = 'published'
+                    """,
+                    (public_design_code,),
+                )
+                design = cursor.fetchone()
+
+                if design is None:
+                    raise HTTPException(status_code=404, detail="Design not found")
+
+                # Step 2: products enabled for this design, with the cheapest active variant price
+                cursor.execute(
+                    """
+                    SELECT
+                        p.product_id,
+                        p.product_name,
+                        p.product_type,
+                        dps.mockup_file_id,
+                        MIN(pv.customer_price) AS starting_price
+                    FROM design_product_settings dps
+                    JOIN products p ON p.product_id = dps.product_id
+                    LEFT JOIN product_variants pv
+                           ON pv.product_id = p.product_id
+                          AND pv.variant_status = 'active'
+                    WHERE dps.design_id = %s
+                      AND dps.is_enabled = true
+                      AND p.product_status = 'active'
+                    GROUP BY p.product_id, p.product_name, p.product_type, dps.mockup_file_id
+                    ORDER BY p.product_id
+                    """,
+                    (design["design_id"],),
+                )
+                products = cursor.fetchall()
+
+                # Step 3: hide the internal id and return design plus products
+                design.pop("design_id")
+                design["products"] = products
+                return design
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+# ---------- Cart ----------
+
+class AddCartItem(BaseModel):
+    public_design_code: uuid.UUID
+    product_variant_id: int
+    quantity: int = Field(ge=1, le=100)
+
+
+class UpdateCartItem(BaseModel):
+    quantity: int = Field(ge=1, le=100)
+
+
+def build_cart_response(cursor, cart_id, cart_token):
+    # Items with CURRENT variant prices (not the stored snapshot)
+    cursor.execute(
+        """
+        SELECT
+            ci.cart_item_id,
+            d.public_design_code,
+            d.title,
+            p.product_name,
+            pv.sku,
+            pv.color_name,
+            pv.size_code,
+            ci.quantity,
+            pv.customer_price AS unit_price,
+            ci.quantity * pv.customer_price AS line_total
+        FROM cart_items ci
+        JOIN designs d ON d.design_id = ci.design_id
+        JOIN product_variants pv ON pv.product_variant_id = ci.product_variant_id
+        JOIN products p ON p.product_id = pv.product_id
+        WHERE ci.cart_id = %s
+        ORDER BY ci.created_at, ci.cart_item_id
+        """,
+        (cart_id,),
+    )
+    items = cursor.fetchall()
+
+    # Totals are calculated from the rows above
+    item_count = sum(item["quantity"] for item in items)
+    subtotal = sum(item["line_total"] for item in items)
+
+    return {
+        "cart_token": cart_token,
+        "items": items,
+        "item_count": item_count,
+        "subtotal": subtotal,
+    }
+
+
+@app.post("/cart")
+def create_cart():
+    # The token is generated by the server, never by the client
+    cart_token = uuid.uuid4()
+
+    try:
+        with get_connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # New active guest cart that expires in 30 days
+                    cursor.execute(
+                        """
+                        INSERT INTO carts (guest_cart_token, cart_status, expires_at)
+                        VALUES (%s, 'active', now() + interval '30 days')
+                        """,
+                        (cart_token,),
+                    )
+                    return {"cart_token": cart_token}
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.get("/cart/{cart_token}")
+def get_cart(cart_token: uuid.UUID):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Step 1: find the active cart
+                cursor.execute(
+                    """
+                    SELECT cart_id
+                    FROM carts
+                    WHERE guest_cart_token = %s AND cart_status = 'active'
+                    """,
+                    (cart_token,),
+                )
+                cart = cursor.fetchone()
+
+                if cart is None:
+                    raise HTTPException(status_code=404, detail="Cart not found")
+
+                # Step 2: build the cart response
+                return build_cart_response(cursor, cart["cart_id"], cart_token)
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.post("/cart/{cart_token}/items")
+def add_cart_item(cart_token: uuid.UUID, body: AddCartItem):
+    try:
+        with get_connection() as conn:
+            # One transaction: any error or HTTPException rolls everything back
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # a. cart exists and is active (row is locked until the transaction ends)
+                    cursor.execute(
+                        """
+                        SELECT cart_id
+                        FROM carts
+                        WHERE guest_cart_token = %s AND cart_status = 'active'
+                        FOR UPDATE
+                        """,
+                        (cart_token,),
+                    )
+                    cart = cursor.fetchone()
+                    if cart is None:
+                        raise HTTPException(status_code=404, detail="Cart not found")
+
+                    # b. design exists and is published
+                    cursor.execute(
+                        """
+                        SELECT design_id
+                        FROM designs
+                        WHERE public_design_code = %s AND design_status = 'published'
+                        """,
+                        (body.public_design_code,),
+                    )
+                    design = cursor.fetchone()
+                    if design is None:
+                        raise HTTPException(status_code=404, detail="Design not found")
+
+                    # c. variant exists, is active, and its product is active
+                    cursor.execute(
+                        """
+                        SELECT
+                            pv.product_variant_id,
+                            pv.product_id,
+                            pv.customer_price,
+                            pv.minimum_quantity,
+                            pv.variant_status,
+                            p.product_status
+                        FROM product_variants pv
+                        JOIN products p ON p.product_id = pv.product_id
+                        WHERE pv.product_variant_id = %s
+                        """,
+                        (body.product_variant_id,),
+                    )
+                    variant = cursor.fetchone()
+                    if variant is None:
+                        raise HTTPException(status_code=404, detail="Variant not found")
+                    if variant["variant_status"] != "active" or variant["product_status"] != "active":
+                        raise HTTPException(status_code=400, detail="Variant is not available")
+
+                    # d. the product must be enabled for this design
+                    cursor.execute(
+                        """
+                        SELECT 1
+                        FROM design_product_settings
+                        WHERE design_id = %s AND product_id = %s AND is_enabled = true
+                        """,
+                        (design["design_id"], variant["product_id"]),
+                    )
+                    if cursor.fetchone() is None:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="This product is not available for this design"
+                        )
+
+                    # e. quantity must reach the variant minimum
+                    if body.quantity < variant["minimum_quantity"]:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Minimum quantity for this variant is "
+                                   + str(variant["minimum_quantity"])
+                        )
+
+                    # Is this design + variant already in the cart?
+                    cursor.execute(
+                        """
+                        SELECT cart_item_id, quantity
+                        FROM cart_items
+                        WHERE cart_id = %s AND design_id = %s AND product_variant_id = %s
+                        FOR UPDATE
+                        """,
+                        (cart["cart_id"], design["design_id"], body.product_variant_id),
+                    )
+                    existing = cursor.fetchone()
+
+                    if existing is not None:
+                        # Same item: increase quantity (max 100) and refresh the price snapshot
+                        new_quantity = existing["quantity"] + body.quantity
+                        if new_quantity > 100:
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Maximum quantity per item is 100"
+                            )
+                        cursor.execute(
+                            """
+                            UPDATE cart_items
+                            SET quantity = %s,
+                                unit_price_snapshot = %s,
+                                updated_at = now()
+                            WHERE cart_item_id = %s
+                            """,
+                            (new_quantity, variant["customer_price"], existing["cart_item_id"]),
+                        )
+                    else:
+                        # New item: price comes from the database, never from the client
+                        cursor.execute(
+                            """
+                            INSERT INTO cart_items
+                                (cart_id, design_id, product_variant_id, quantity,
+                                 unit_price_snapshot, saved_for_later)
+                            VALUES (%s, %s, %s, %s, %s, false)
+                            """,
+                            (
+                                cart["cart_id"],
+                                design["design_id"],
+                                body.product_variant_id,
+                                body.quantity,
+                                variant["customer_price"],
+                            ),
+                        )
+
+                    # Touch the cart
+                    cursor.execute(
+                        "UPDATE carts SET updated_at = now() WHERE cart_id = %s",
+                        (cart["cart_id"],),
+                    )
+
+                    # Return the updated cart
+                    return build_cart_response(cursor, cart["cart_id"], cart_token)
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.patch("/cart/{cart_token}/items/{cart_item_id}")
+def update_cart_item(cart_token: uuid.UUID, cart_item_id: int, body: UpdateCartItem):
+    try:
+        with get_connection() as conn:
+            # One transaction: any error or HTTPException rolls everything back
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # Step 1: find the active cart (locked until the transaction ends)
+                    cursor.execute(
+                        """
+                        SELECT cart_id
+                        FROM carts
+                        WHERE guest_cart_token = %s AND cart_status = 'active'
+                        FOR UPDATE
+                        """,
+                        (cart_token,),
+                    )
+                    cart = cursor.fetchone()
+                    if cart is None:
+                        raise HTTPException(status_code=404, detail="Cart not found")
+
+                    # Step 2: the item must belong to this cart
+                    cursor.execute(
+                        """
+                        SELECT pv.minimum_quantity
+                        FROM cart_items ci
+                        JOIN product_variants pv ON pv.product_variant_id = ci.product_variant_id
+                        WHERE ci.cart_item_id = %s AND ci.cart_id = %s
+                        """,
+                        (cart_item_id, cart["cart_id"]),
+                    )
+                    item = cursor.fetchone()
+                    if item is None:
+                        raise HTTPException(status_code=404, detail="Cart item not found")
+
+                    # Step 3: quantity must reach the variant minimum
+                    if body.quantity < item["minimum_quantity"]:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Minimum quantity for this variant is "
+                                   + str(item["minimum_quantity"])
+                        )
+
+                    # Step 4: update the quantity and touch the cart
+                    cursor.execute(
+                        """
+                        UPDATE cart_items
+                        SET quantity = %s, updated_at = now()
+                        WHERE cart_item_id = %s AND cart_id = %s
+                        """,
+                        (body.quantity, cart_item_id, cart["cart_id"]),
+                    )
+                    cursor.execute(
+                        "UPDATE carts SET updated_at = now() WHERE cart_id = %s",
+                        (cart["cart_id"],),
+                    )
+
+                    # Return the updated cart
+                    return build_cart_response(cursor, cart["cart_id"], cart_token)
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.delete("/cart/{cart_token}/items/{cart_item_id}")
+def delete_cart_item(cart_token: uuid.UUID, cart_item_id: int):
+    try:
+        with get_connection() as conn:
+            # One transaction: any error or HTTPException rolls everything back
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # Step 1: find the active cart (locked until the transaction ends)
+                    cursor.execute(
+                        """
+                        SELECT cart_id
+                        FROM carts
+                        WHERE guest_cart_token = %s AND cart_status = 'active'
+                        FOR UPDATE
+                        """,
+                        (cart_token,),
+                    )
+                    cart = cursor.fetchone()
+                    if cart is None:
+                        raise HTTPException(status_code=404, detail="Cart not found")
+
+                    # Step 2: delete the item, only if it belongs to this cart
+                    cursor.execute(
+                        """
+                        DELETE FROM cart_items
+                        WHERE cart_item_id = %s AND cart_id = %s
+                        RETURNING cart_item_id
+                        """,
+                        (cart_item_id, cart["cart_id"]),
+                    )
+                    if cursor.fetchone() is None:
+                        raise HTTPException(status_code=404, detail="Cart item not found")
+
+                    # Step 3: touch the cart
+                    cursor.execute(
+                        "UPDATE carts SET updated_at = now() WHERE cart_id = %s",
+                        (cart["cart_id"],),
+                    )
+
+                    # Return the updated cart
+                    return build_cart_response(cursor, cart["cart_id"], cart_token)
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
