@@ -42,14 +42,24 @@ export function getNiches(slug:string) {
   return get<{interest:ApiInterest; niches:ApiNiche[]}>('/interests/' + encodeURIComponent(slug) + '/niches');
 }
 
-export async function getDesigns({categorySlug, search, limit = 100, offset = 0}:{categorySlug?:string; search?:string; limit?:number; offset?:number} = {}) {
+export type DesignParams = {categorySlug?:string; search?:string; priceMin?:string; priceMax?:string; productType?:string; sort?:string; limit?:number; offset?:number};
+
+// One page of designs plus the total number of matches
+export async function getDesignPage({categorySlug, search, priceMin, priceMax, productType, sort, limit = 100, offset = 0}:DesignParams = {}) {
   const q = new URLSearchParams();
   if (categorySlug) q.set('category_slug', categorySlug);
   if (search) q.set('search', search);
+  if (priceMin) q.set('price_min', priceMin);
+  if (priceMax) q.set('price_max', priceMax);
+  if (productType) q.set('product_type', productType);
+  if (sort) q.set('sort', sort);
   q.set('limit', String(limit));
   q.set('offset', String(offset));
-  const res = await get<{items:ApiDesign[]}>('/designs?' + q.toString());
-  return res.items;
+  return get<{items:ApiDesign[]; total:number}>('/designs?' + q.toString());
+}
+
+export async function getDesigns(params:DesignParams = {}) {
+  return (await getDesignPage(params)).items;
 }
 
 export function getDesign(code:string) {
