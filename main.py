@@ -2,6 +2,7 @@
 import os
 import uuid
 from contextlib import contextmanager
+from typing import Literal
 
 import psycopg
 from psycopg.rows import dict_row
@@ -227,66 +228,125 @@ def get_interest_niches(category_slug: str):
         )
 
 
+# Shared SQL for GET /designs (fixed text, no user input is ever added to it).
+# base = published designs matching category, search and product type, with
+# starting_price and popularity calculated once per design.
+DESIGNS_BASE_SQL = """
+WITH base AS (
+    SELECT
+        d.design_id,
+        d.public_design_code,
+        d.title,
+        d.preview_file_id,
+        CASE WHEN f.storage_key IS NULL THEN NULL
+             ELSE '/media/' || f.storage_key END AS preview_url,
+        c.category_name,
+        d.first_published_at,
+        (
+            -- cheapest active variant of an active, enabled product
+            SELECT MIN(pv.customer_price)
+            FROM design_product_settings dps
+            JOIN products p ON p.product_id = dps.product_id
+            JOIN product_variants pv ON pv.product_id = p.product_id
+            WHERE dps.design_id = d.design_id
+              AND dps.is_enabled = true
+              AND p.product_status = 'active'
+              AND pv.variant_status = 'active'
+        ) AS starting_price,
+        (
+            -- number of order items for this design
+            SELECT COUNT(*) FROM order_items oi WHERE oi.design_id = d.design_id
+        ) AS popularity
+    FROM designs d
+    LEFT JOIN files f ON f.file_id = d.preview_file_id
+    LEFT JOIN categories c ON c.category_id = d.category_id
+    LEFT JOIN categories pc ON pc.category_id = c.parent_category_id
+    WHERE d.design_status = 'published'
+      AND (%s::text IS NULL
+           OR lower(c.category_slug) = lower(%s)
+           OR lower(pc.category_slug) = lower(%s))
+      AND (%s::text IS NULL OR d.title ILIKE %s)
+      AND (%s::text IS NULL OR EXISTS (
+            -- enabled for an active product of this type
+            SELECT 1
+            FROM design_product_settings dps2
+            JOIN products p2 ON p2.product_id = dps2.product_id
+            WHERE dps2.design_id = d.design_id
+              AND dps2.is_enabled = true
+              AND p2.product_status = 'active'
+              AND lower(p2.product_type::text) = lower(%s)
+          ))
+)
+"""
+
+# Price filter on the calculated starting_price (applied to the base CTE)
+DESIGNS_FILTER_SQL = """
+FROM base
+WHERE (%s::numeric IS NULL OR starting_price >= %s::numeric)
+  AND (%s::numeric IS NULL OR starting_price <= %s::numeric)
+"""
+
+
 @app.get("/designs")
 def get_designs(
     category_slug: str | None = None,
     search: str | None = Query(default=None, max_length=100),
+    price_min: float | None = Query(default=None, ge=0),
+    price_max: float | None = Query(default=None, ge=0),
+    product_type: str | None = Query(default=None, max_length=50),
+    sort: Literal["newest", "price_asc", "price_desc", "popular"] = "newest",
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ):
     # Build the ILIKE pattern in Python and pass it as a parameter (None = no search)
     search_pattern = f"%{search}%" if search else None
-    # Treat an empty slug as "no filter"
+    # Treat empty strings as "no filter"
     slug = category_slug if category_slug else None
+    ptype = product_type if product_type else None
+
+    # Same filter values are used by the list query and the total query
+    filter_params = (
+        slug, slug, slug,
+        search_pattern, search_pattern,
+        ptype, ptype,
+        price_min, price_min,
+        price_max, price_max,
+    )
 
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                # Published designs; category filter matches the category itself
-                # or its parent (so an interest includes all its niches)
+                # Step 1: the page of designs, filtered and sorted
                 cursor.execute(
-                    """
-                    SELECT
-                        d.design_id,
-                        d.public_design_code,
-                        d.title,
-                        d.preview_file_id,
-                        CASE WHEN f.storage_key IS NULL THEN NULL
-                             ELSE '/media/' || f.storage_key END AS preview_url,
-                        c.category_name,
-                        d.first_published_at,
-                        (
-                            -- cheapest active variant of an active, enabled product
-                            SELECT MIN(pv.customer_price)
-                            FROM design_product_settings dps
-                            JOIN products p ON p.product_id = dps.product_id
-                            JOIN product_variants pv ON pv.product_id = p.product_id
-                            WHERE dps.design_id = d.design_id
-                              AND dps.is_enabled = true
-                              AND p.product_status = 'active'
-                              AND pv.variant_status = 'active'
-                        ) AS starting_price
-                    FROM designs d
-                    LEFT JOIN files f ON f.file_id = d.preview_file_id
-                    LEFT JOIN categories c ON c.category_id = d.category_id
-                    LEFT JOIN categories pc ON pc.category_id = c.parent_category_id
-                    WHERE d.design_status = 'published'
-                      AND (%s::text IS NULL
-                           OR lower(c.category_slug) = lower(%s)
-                           OR lower(pc.category_slug) = lower(%s))
-                      AND (%s::text IS NULL OR d.title ILIKE %s)
-                    ORDER BY d.first_published_at DESC NULLS LAST, d.design_id DESC
+                    DESIGNS_BASE_SQL
+                    + "SELECT * "
+                    + DESIGNS_FILTER_SQL
+                    + """
+                    ORDER BY
+                        CASE WHEN %s = 'price_asc' THEN starting_price END ASC NULLS LAST,
+                        CASE WHEN %s = 'price_desc' THEN starting_price END DESC NULLS LAST,
+                        CASE WHEN %s = 'popular' THEN popularity END DESC,
+                        CASE WHEN %s IN ('newest', 'popular') THEN first_published_at END DESC NULLS LAST,
+                        design_id DESC
                     LIMIT %s OFFSET %s
                     """,
-                    (slug, slug, slug, search_pattern, search_pattern, limit, offset),
+                    filter_params + (sort, sort, sort, sort, limit, offset),
                 )
                 rows = cursor.fetchall()
 
-                # Remove the internal design_id from the response (only used for ordering)
+                # Step 2: total matching designs, ignoring limit/offset
+                cursor.execute(
+                    DESIGNS_BASE_SQL + "SELECT COUNT(*) AS total " + DESIGNS_FILTER_SQL,
+                    filter_params,
+                )
+                total = cursor.fetchone()["total"]
+
+                # Remove internal fields from the response (only used for ordering)
                 for row in rows:
                     row.pop("design_id")
+                    row.pop("popularity")
 
-                return {"items": rows, "limit": limit, "offset": offset}
+                return {"items": rows, "total": total, "limit": limit, "offset": offset}
 
     except psycopg.Error as e:
         print("DATABASE ERROR:", repr(e))
