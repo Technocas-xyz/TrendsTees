@@ -3,6 +3,7 @@ import {useEffect,useState} from 'react';
 import Link from 'next/link';
 import {useRouter} from 'next/navigation';
 import {LayoutDashboard, ShoppingBag,Heart,MapPin,UserRound,Settings,LogOut,ShieldCheck,ArrowRight,Package,Clock,Mail,Phone,House,CheckCircle2} from 'lucide-react';
+import {loadCart} from '@/lib/api';
 import './account.css';
 type User = {name:string;email:string};
 type Order={demoId?:string;createdAt?:string;paymentStatus?:string;subtotal?:number};
@@ -11,7 +12,7 @@ const tabs=[{name:'Overview',slug:'',Icon:LayoutDashboard},{name:'My Orders',slu
 const read=(key:string)=>{try{const raw=localStorage.getItem(key);return raw?JSON.parse(raw):null}catch{return null}};
 export default function AccountDashboard({user,section}:{user:User;section:string}){
  const router=useRouter(); const [ready,setReady]=useState(false),[order,setOrder]=useState<Order|null>(null),[address,setAddress]=useState<Address|null>(null),[wishlist,setWishlist]=useState<number[]>([]),[cartCount,setCartCount]=useState(0),[message,setMessage]=useState('');
- useEffect(()=>{const o=read('printandsell-demo-order');setOrder(o&&typeof o==='object'?o:null);const a=read('printandsell-shipping');setAddress(a&&typeof a==='object'?a:null);const w=read('printsell-wishlist')??read('printandsell-wishlist')??[];setWishlist(Array.isArray(w)?w:[]);const c=read('printandsell-cart');setCartCount(Array.isArray(c)?c.reduce((t:number,i:{quantity?:number})=>t+(Number(i.quantity)||0),0):0);setReady(true)},[]);
+ useEffect(()=>{const o=read('printandsell-demo-order');setOrder(o&&typeof o==='object'?o:null);const a=read('printandsell-shipping');setAddress(a&&typeof a==='object'?a:null);const w=read('printsell-wishlist')??read('printandsell-wishlist')??[];setWishlist(Array.isArray(w)?w:[]);loadCart().then(c=>setCartCount(c.item_count)).catch(()=>{});setReady(true)},[]);
  async function logout(){await fetch('/api/auth/logout',{method:'POST'});router.replace('/login');router.refresh()}
  const title=tabs.find(x=>x.slug=== (section==='overview'?'':section))?.name||'My Account';
  const compact=<><div className="acc-kicker">PRINT&SELL / CUSTOMER ACCOUNT</div><h1>{title}</h1><p className="acc-muted">{section==='overview'?`Welcome back, ${user.name}. Here's your personal dashboard.`:'Manage your shopping details in one place.'}</p></>;

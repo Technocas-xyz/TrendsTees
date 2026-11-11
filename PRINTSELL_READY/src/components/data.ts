@@ -18,4 +18,4 @@ export const types=[{id:'tshirts',name:'T-Shirts',price:16.99},{id:'hoodies',nam
 export type CartItem={cartId:string;designId:string;designName:string;productId:string;productName:string;color:string|null;size:string;placement:string;quantity:number;unitPrice:number};
 export type Shipping={firstName:string;lastName:string;email:string;phone:string;address:string;apartment:string;city:string;state:string;zip:string;country:string;shippingMethod:string};
 export type DemoOrder={demoId:string;createdAt:string;paymentMethod:string;paymentStatus:'NOT_PAID';items:CartItem[];shipping:Shipping;subtotal:number};
-export const CART='printandsell-cart';export const ORDER='printandsell-demo-order';export const SHIPPING='printandsell-shipping';
+export const ORDER='printandsell-demo-order';export const SHIPPING='printandsell-shipping';
