@@ -102,10 +102,14 @@ def get_product_variants(product_id: int):
                         color_name,
                         color_hex,
                         size_code,
+                        size_name,
                         customer_price
                     FROM product_variants
                     WHERE product_id = %s AND variant_status = 'active'
-                    ORDER BY color_name, size_code
+                    ORDER BY
+                        color_name,
+                        array_position(ARRAY['XS','S','M','L','XL','2XL','3XL']::text[], size_code::text),
+                        size_code
                     """,
                     (product_id,),
                 )
@@ -449,11 +453,18 @@ def build_cart_response(cursor, cart_id, cart_token):
             pv.sku,
             pv.color_name,
             pv.size_code,
+            pv.product_variant_id,
+            p.product_id,
+            p.product_type,
+            pv.color_hex,
+            CASE WHEN f.storage_key IS NULL THEN NULL
+                 ELSE '/media/' || f.storage_key END AS preview_url,
             ci.quantity,
             pv.customer_price AS unit_price,
             ci.quantity * pv.customer_price AS line_total
         FROM cart_items ci
         JOIN designs d ON d.design_id = ci.design_id
+        LEFT JOIN files f ON f.file_id = d.preview_file_id
         JOIN product_variants pv ON pv.product_variant_id = ci.product_variant_id
         JOIN products p ON p.product_id = pv.product_id
         WHERE ci.cart_id = %s
