@@ -17,5 +17,4 @@ export const interests=['Animals & Pets','Faith & Inspiration','Fitness & Gym','
 export const types=[{id:'tshirts',name:'T-Shirts',price:16.99},{id:'hoodies',name:'Hoodies',price:29.99},{id:'sweatshirts',name:'Sweatshirts',price:26.99},{id:'tank-tops',name:'Tank Tops',price:18.99},{id:'long-sleeve',name:'Long Sleeve',price:22.99},{id:'caps',name:'Hats & Caps',price:19.99},{id:'dtf',name:'DTF Transfers',price:4.99}];
 export type CartItem={cartId:string;designId:string;designName:string;productId:string;productName:string;color:string|null;size:string;placement:string;quantity:number;unitPrice:number};
 export type Shipping={firstName:string;lastName:string;email:string;phone:string;address:string;apartment:string;city:string;state:string;zip:string;country:string;shippingMethod:string};
-export type DemoOrder={demoId:string;createdAt:string;paymentMethod:string;paymentStatus:'NOT_PAID';items:CartItem[];shipping:Shipping;subtotal:number};
-export const ORDER='printandsell-demo-order';export const SHIPPING='printandsell-shipping';
+

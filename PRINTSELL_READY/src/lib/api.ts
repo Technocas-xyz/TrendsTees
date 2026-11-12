@@ -42,7 +42,12 @@ async function request<T>(method:string, path:string, body?:unknown):Promise<T> 
     try {
       const d = (await res.json()).detail;
       if (typeof d === 'string') detail = d;
-      else if (Array.isArray(d)) detail = d.map(x => x.msg).join('; '); // 422 validation errors
+      else if (Array.isArray(d)) { // 422 validation errors: "field: message"
+        detail = d.map(x => {
+          const field = Array.isArray(x.loc) ? String(x.loc[x.loc.length - 1]) : '';
+          return (field && field !== 'body' ? field + ': ' : '') + x.msg;
+        }).join('; ');
+      }
     } catch {}
     throw new ApiError(detail || 'Store API error ' + res.status, res.status);
   }
@@ -129,6 +134,12 @@ export function removeCartItem(token:string, id:number) {
   return request<ApiCart>('DELETE', '/cart/' + encodeURIComponent(token) + '/items/' + id);
 }
 
+// Saved cart token (null if there is none) and a way to forget it after an order is placed
+export const getCartToken = savedToken;
+export function clearCartToken() {
+  saveToken(null);
+}
+
 // Token of a working cart: the saved one, or a new cart if there is none or the API no longer knows it
 export async function ensureCart() {
   const token = savedToken();
@@ -152,6 +163,55 @@ export async function loadCart() {
   }
 }
 
+// ---- Checkout, orders (shapes checked against the backend, main.py) ----
+// GET /shipping-methods. free_over: order subtotal above which shipping is free (null = never)
+export type ApiShippingMethod = {code:string; name:string; price:number; min_days:number; max_days:number; free_over:number|null};
+
+export function getShippingMethods() {
+  return get<ApiShippingMethod[]>('/shipping-methods');
+}
+
+// Fields shown for an item on the payment and tracking pages (quote and order items both have them)
+export type ApiLineItem = {preview_url?:string|null; title:string; product_name:string|null; color_name:string|null; size_code:string|null; quantity:number; line_total:string|number};
+export type ApiQuoteItem = ApiLineItem & {
+  public_design_code:string; sku:string; unit_price:string|number; preview_url:string|null; product_name:string;
+};
+export type ApiTotals = {
+  subtotal:string|number; discount_total:string|number; discount_name:string|null;
+  shipping_amount:string|number; tax_total:string|number; total:string|number;
+};
+// POST /checkout
+export type ApiQuote = ApiTotals & {
+  checkout_session_id:number; items:ApiQuoteItem[];
+  estimated_delivery_start:string|null; estimated_delivery_end:string|null; quote_expires_at:string;
+};
+export type ApiCheckoutBody = {
+  cart_token:string; contact_email:string; shipping_method_code:string;
+  shipping_address:{full_name:string; phone:string; line_1:string; line_2?:string; city:string; state_region:string; postal_code:string; country_code:string};
+};
+
+export function createCheckout(body:ApiCheckoutBody) {
+  return request<ApiQuote>('POST', '/checkout', body);
+}
+
+// POST /checkout/{id}/place-order. 400 = quote expired or already used, 409 = prices changed
+export function placeOrder(checkoutSessionId:number, cartToken:string) {
+  return request<{order_public_code:string; order_total:string|number}>('POST', '/checkout/' + checkoutSessionId + '/place-order', {cart_token: cartToken});
+}
+
+// GET /orders/track. Note the order totals use different names than the quote (item_subtotal, shipping_total, order_total)
+export type ApiTrackedOrder = {
+  order_public_code:string; placed_at:string; order_status:string; payment_status:string;
+  item_subtotal:string|number; discount_total:string|number; discount_name:string|null;
+  shipping_total:string|number; tax_total:string|number; order_total:string|number;
+  shipping_address:{recipient_name:string; city:string; country_code:string}|null;
+  items:(ApiLineItem & {unit_price:string|number; preview_url:string|null; item_status:string})[];
+  status_history:{status_code:string; status_message:string|null; changed_at:string}[];
+};
+
+export function trackOrder(code:string, email:string) {
+  return get<ApiTrackedOrder>('/orders/track?' + new URLSearchParams({code, email}).toString());
+}
 // Converts an API design into the Design type the existing JSX uses.
 // rating / reviews / colors are not in the database, so they are 0 (the UI hides them).
 export function toDesign(a:ApiDesign):Design {
