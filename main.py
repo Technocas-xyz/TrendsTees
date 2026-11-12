@@ -1,21 +1,26 @@
 
+import hashlib
+import hmac
+import ipaddress
 import os
 import secrets
 import string
+import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Literal
+from typing import Annotated, Literal
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 load_dotenv()
 
@@ -25,6 +30,7 @@ app = FastAPI(title="TrendsTees API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
+    allow_credentials=True,  # needed so the browser sends the login cookie
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
@@ -999,12 +1005,16 @@ def get_shipping_methods():
 
 
 @app.post("/checkout")
-def create_checkout(body: CheckoutBody):
+def create_checkout(body: CheckoutBody, request: Request):
     # Address as plain JSON (country code in upper case)
     address = body.shipping_address.model_dump()
     address["country_code"] = address["country_code"].upper()
 
     try:
+        # Logged-in customer (None for guests)
+        user = get_current_user(request)
+        user_id = user["user_id"] if user else None
+
         with get_connection() as conn:
             # One transaction: any error or HTTPException rolls everything back
             with conn.transaction():
@@ -1040,17 +1050,18 @@ def create_checkout(body: CheckoutBody):
                     cursor.execute(
                         """
                         INSERT INTO checkout_sessions
-                            (cart_id, contact_email, guest_shipping_address_json,
+                            (cart_id, user_id, contact_email, guest_shipping_address_json,
                              shipping_method_code, shipping_amount,
                              estimated_delivery_start, estimated_delivery_end,
                              item_subtotal, discount_total, tax_total, checkout_total,
                              checkout_status, quote_expires_at, applied_discount_rule_id)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                                 'ready', now() + interval '30 minutes', %s)
                         RETURNING checkout_session_id, quote_expires_at
                         """,
                         (
                             cart["cart_id"],
+                            user_id,
                             body.contact_email,
                             Jsonb(address),
                             body.shipping_method_code,
@@ -1105,8 +1116,12 @@ def create_checkout(body: CheckoutBody):
 
 
 @app.post("/checkout/{checkout_session_id}/place-order")
-def place_order(checkout_session_id: int, body: PlaceOrderBody):
+def place_order(checkout_session_id: int, body: PlaceOrderBody, request: Request):
     try:
+        # Logged-in customer (None for guests)
+        user = get_current_user(request)
+        user_id = user["user_id"] if user else None
+
         with get_connection() as conn:
             # One transaction: any error or HTTPException rolls everything back
             with conn.transaction():
@@ -1178,11 +1193,11 @@ def place_order(checkout_session_id: int, body: PlaceOrderBody):
                         cursor.execute(
                             """
                             INSERT INTO orders
-                                (order_public_code, checkout_session_id, contact_email,
+                                (order_public_code, checkout_session_id, user_id, contact_email,
                                  item_subtotal, discount_total, shipping_total, tax_total,
                                  order_total, order_status, payment_status,
                                  applied_discount_rule_id, applied_discount_type)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
                                     'payment_pending', 'unpaid', %s, %s)
                             ON CONFLICT (order_public_code) DO NOTHING
                             RETURNING order_id
@@ -1190,6 +1205,7 @@ def place_order(checkout_session_id: int, body: PlaceOrderBody):
                             (
                                 code,
                                 checkout_session_id,
+                                user_id,
                                 session["contact_email"],
                                 quote["subtotal"],
                                 quote["discount_total"],
@@ -1310,6 +1326,100 @@ def place_order(checkout_session_id: int, body: PlaceOrderBody):
         )
 
 
+# ---------- Order tracking ----------
+
+# Shared by /orders/track and /me/orders/{code} (fixed text; each endpoint adds its own WHERE)
+ORDER_SQL = """
+    SELECT
+        o.order_id,
+        o.order_public_code,
+        o.placed_at,
+        o.order_status,
+        o.payment_status,
+        o.item_subtotal,
+        o.discount_total,
+        o.shipping_total,
+        o.tax_total,
+        o.order_total,
+        dr.rule_name AS discount_name
+    FROM orders o
+    LEFT JOIN discount_rules dr ON dr.discount_rule_id = o.applied_discount_rule_id
+"""
+
+
+def build_order_response(cursor, order):
+    # Step 1: limited shipping info (name, city, country only)
+    cursor.execute(
+        """
+        SELECT recipient_name, city, country_code
+        FROM order_addresses
+        WHERE order_id = %s AND address_type = 'shipping'
+        """,
+        (order["order_id"],),
+    )
+    shipping_address = cursor.fetchone()
+
+    # Step 2: items from the snapshots saved at order time
+    cursor.execute(
+        """
+        SELECT
+            item_title_snapshot AS title,
+            design_snapshot_json,
+            product_snapshot_json,
+            quantity,
+            unit_price,
+            line_total,
+            item_status
+        FROM order_items
+        WHERE order_id = %s
+        ORDER BY order_item_id
+        """,
+        (order["order_id"],),
+    )
+    items = [
+        {
+            "title": row["title"],
+            "preview_url": row["design_snapshot_json"].get("preview_url"),
+            "product_name": row["product_snapshot_json"].get("product_name"),
+            "color_name": row["product_snapshot_json"].get("color_name"),
+            "size_code": row["product_snapshot_json"].get("size_code"),
+            "quantity": row["quantity"],
+            "unit_price": row["unit_price"],
+            "line_total": row["line_total"],
+            "item_status": row["item_status"],
+        }
+        for row in cursor.fetchall()
+    ]
+
+    # Step 3: customer-visible status history, oldest first
+    cursor.execute(
+        """
+        SELECT status_code, status_message, changed_at
+        FROM order_status_history
+        WHERE order_id = %s AND is_customer_visible = true
+        ORDER BY changed_at, order_status_history_id
+        """,
+        (order["order_id"],),
+    )
+    history = cursor.fetchall()
+
+    return {
+        "order_public_code": order["order_public_code"],
+        "placed_at": order["placed_at"],
+        "order_status": order["order_status"],
+        "payment_status": order["payment_status"],
+        "item_subtotal": order["item_subtotal"],
+        "discount_total": order["discount_total"],
+        "discount_name": order["discount_name"],
+        "shipping_total": order["shipping_total"],
+        "tax_total": order["tax_total"],
+        "order_total": order["order_total"],
+        "shipping_address": shipping_address,
+        "items": items,
+        "status_history": history,
+    }
+
+
 @app.get("/orders/track")
 def track_order(
     code: str = Query(min_length=1, max_length=40),
@@ -1318,23 +1428,10 @@ def track_order(
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                # Step 1: the order code and email must both match
+                # The order code and email must both match
                 cursor.execute(
-                    """
-                    SELECT
-                        o.order_id,
-                        o.order_public_code,
-                        o.placed_at,
-                        o.order_status,
-                        o.payment_status,
-                        o.item_subtotal,
-                        o.discount_total,
-                        o.shipping_total,
-                        o.tax_total,
-                        o.order_total,
-                        dr.rule_name AS discount_name
-                    FROM orders o
-                    LEFT JOIN discount_rules dr ON dr.discount_rule_id = o.applied_discount_rule_id
+                    ORDER_SQL
+                    + """
                     WHERE o.order_public_code = %s
                       AND lower(o.contact_email) = lower(%s)
                     """,
@@ -1349,76 +1446,478 @@ def track_order(
                         detail="Order not found. Check the order number and email."
                     )
 
-                # Step 2: limited shipping info (name, city, country only)
-                cursor.execute(
-                    """
-                    SELECT recipient_name, city, country_code
-                    FROM order_addresses
-                    WHERE order_id = %s AND address_type = 'shipping'
-                    """,
-                    (order["order_id"],),
-                )
-                shipping_address = cursor.fetchone()
+                return build_order_response(cursor, order)
 
-                # Step 3: items from the snapshots saved at order time
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+# ---------- Customer accounts ----------
+
+SESSION_COOKIE = "tt_session"
+SESSION_DAYS = 7
+MAX_FAILED_LOGINS = 8
+LOGIN_WINDOW_SECONDS = 15 * 60
+
+# Trimmed, lower-case email in the normal email format
+Email = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, to_lower=True, max_length=320, pattern=EMAIL_PATTERN),
+]
+
+
+class SignupBody(BaseModel):
+    full_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
+    email: Email
+    password: str = Field(min_length=12, max_length=128)
+
+
+class LoginBody(BaseModel):
+    email: str = Field(min_length=1, max_length=320)
+    password: str = Field(min_length=1, max_length=128)
+
+
+def hash_password(password):
+    # Random 16-byte salt + scrypt, stored as "scrypt$<salt_hex>$<hash_hex>"
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=64)
+    return "scrypt$" + salt.hex() + "$" + digest.hex()
+
+
+def verify_password(password, stored):
+    # Any value that is not in the format above (for example a placeholder) never matches
+    try:
+        scheme, salt_hex, hash_hex = stored.split("$")
+        if scheme != "scrypt":
+            return False
+        expected = bytes.fromhex(hash_hex)
+        digest = hashlib.scrypt(
+            password.encode("utf-8"), salt=bytes.fromhex(salt_hex), n=16384, r=8, p=1, dklen=64
+        )
+    except ValueError:
+        return False
+    # Constant-time comparison
+    return hmac.compare_digest(digest, expected)
+
+
+# Used when the email is unknown, so a wrong email takes about as long as a wrong password
+DUMMY_PASSWORD_HASH = hash_password("not-a-real-password")
+
+# Failed logins kept in memory: {(email, ip): [time, time, ...]}
+login_failures = {}
+login_lock = threading.Lock()
+
+
+def too_many_failed_logins(key):
+    now = time.monotonic()
+    with login_lock:
+        recent = [t for t in login_failures.get(key, []) if now - t < LOGIN_WINDOW_SECONDS]
+        if recent:
+            login_failures[key] = recent
+        else:
+            login_failures.pop(key, None)
+        return len(recent) >= MAX_FAILED_LOGINS
+
+
+def record_failed_login(key):
+    now = time.monotonic()
+    with login_lock:
+        login_failures.setdefault(key, []).append(now)
+        # Keep memory small: drop keys whose attempts are all old
+        if len(login_failures) > 10000:
+            for k in list(login_failures):
+                if now - login_failures[k][-1] >= LOGIN_WINDOW_SECONDS:
+                    del login_failures[k]
+
+
+def clear_failed_logins(key):
+    with login_lock:
+        login_failures.pop(key, None)
+
+
+def client_ip(request):
+    # Valid IP address text, or None
+    host = request.client.host if request.client else None
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return None
+
+
+def start_session(cursor, request, response, user_id):
+    # Random token for the browser; only its sha256 hash is stored
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    device = (request.headers.get("user-agent") or "")[:150] or None
+
+    cursor.execute(
+        """
+        INSERT INTO user_sessions (user_id, refresh_token_hash, device_label, ip_address, expires_at)
+        VALUES (%s, %s, %s, %s::inet, now() + make_interval(days => %s))
+        """,
+        (user_id, token_hash, device, client_ip(request), SESSION_DAYS),
+    )
+
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=token,
+        max_age=SESSION_DAYS * 24 * 60 * 60,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=False,  # localhost only; use True behind HTTPS
+    )
+
+
+def get_current_user(request):
+    # Logged-in user from the session cookie, or None
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return None
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            # Session must be unrevoked and unexpired; the account must be active
+            cursor.execute(
+                """
+                SELECT s.session_id, u.user_id, u.full_name, u.email
+                FROM user_sessions s
+                JOIN app_users u ON u.user_id = s.user_id
+                WHERE s.refresh_token_hash = %s
+                  AND s.revoked_at IS NULL
+                  AND s.expires_at > now()
+                  AND u.account_status = 'active'
+                  AND u.deleted_at IS NULL
+                """,
+                (token_hash,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+
+            cursor.execute(
+                "UPDATE user_sessions SET last_active_at = now(), updated_at = now() WHERE session_id = %s",
+                (row["session_id"],),
+            )
+            return {"user_id": row["user_id"], "full_name": row["full_name"], "email": row["email"]}
+
+
+@app.post("/auth/signup")
+def signup(body: SignupBody, request: Request, response: Response):
+    # Hash first (CPU work), before opening the database transaction
+    password_hash = hash_password(body.password)
+
+    try:
+        with get_connection() as conn:
+            # One transaction: user, role and session are saved together or not at all
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # Step 1: the email must be new
+                    cursor.execute(
+                        "SELECT 1 FROM app_users WHERE lower(email) = %s",
+                        (body.email,),
+                    )
+                    if cursor.fetchone() is not None:
+                        raise HTTPException(status_code=409, detail="This email is already registered.")
+
+                    # Step 2: create the active user and give it the customer role
+                    cursor.execute(
+                        """
+                        INSERT INTO app_users (full_name, email, password_hash, account_status)
+                        VALUES (%s, %s, %s, 'active')
+                        RETURNING user_id
+                        """,
+                        (body.full_name, body.email, password_hash),
+                    )
+                    user_id = cursor.fetchone()["user_id"]
+                    cursor.execute(
+                        "INSERT INTO user_roles (user_id, role_code) VALUES (%s, 'customer')",
+                        (user_id,),
+                    )
+
+                    # Step 3: log the new user in
+                    start_session(cursor, request, response, user_id)
+                    return {"user_id": user_id, "full_name": body.full_name, "email": body.email}
+
+    except psycopg.errors.UniqueViolation:
+        # Two signups with the same email at the same moment
+        raise HTTPException(status_code=409, detail="This email is already registered.")
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.post("/auth/login")
+def login(body: LoginBody, request: Request, response: Response):
+    email = body.email.strip().lower()
+    key = (email, client_ip(request) or "unknown")
+
+    # Step 1: too many recent failures for this email + IP
+    if too_many_failed_logins(key):
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again in 15 minutes.")
+
+    try:
+        with get_connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # Step 2: find the active user
+                    cursor.execute(
+                        """
+                        SELECT user_id, full_name, email, password_hash
+                        FROM app_users
+                        WHERE lower(email) = %s
+                          AND account_status = 'active'
+                          AND deleted_at IS NULL
+                        """,
+                        (email,),
+                    )
+                    user = cursor.fetchone()
+
+                    # Step 3: check the password (a dummy hash is checked for unknown emails)
+                    stored = user["password_hash"] if user else DUMMY_PASSWORD_HASH
+                    password_ok = verify_password(body.password, stored)
+
+                    # Same message for a wrong email and a wrong password
+                    if user is None or not password_ok:
+                        record_failed_login(key)
+                        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+                    # Step 4: success - reset the counter, save the login time, start a session
+                    clear_failed_logins(key)
+                    cursor.execute(
+                        "UPDATE app_users SET last_login_at = now(), updated_at = now() WHERE user_id = %s",
+                        (user["user_id"],),
+                    )
+                    start_session(cursor, request, response, user["user_id"])
+                    return {"user_id": user["user_id"], "full_name": user["full_name"], "email": user["email"]}
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.post("/auth/logout")
+def logout(request: Request, response: Response):
+    token = request.cookies.get(SESSION_COOKIE)
+
+    try:
+        if token:
+            token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            with get_connection() as conn:
+                with conn.transaction():
+                    with conn.cursor() as cursor:
+                        # Revoke the session (does nothing if it is unknown or already revoked)
+                        cursor.execute(
+                            """
+                            UPDATE user_sessions
+                            SET revoked_at = now(), updated_at = now()
+                            WHERE refresh_token_hash = %s AND revoked_at IS NULL
+                            """,
+                            (token_hash,),
+                        )
+
+        # Always remove the cookie and answer 200, even when nobody was logged in
+        response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="lax", secure=False)
+        return {"message": "Logged out"}
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.get("/auth/me")
+def get_me(request: Request):
+    try:
+        user = get_current_user(request)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not logged in")
+        return user
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.post("/cart/{cart_token}/claim")
+def claim_cart(cart_token: uuid.UUID, request: Request):
+    try:
+        user = get_current_user(request)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not logged in")
+
+        with get_connection() as conn:
+            # One transaction: the merge is all or nothing
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # Step 1: the cart must be active and free (or already this user's)
+                    cursor.execute(
+                        """
+                        SELECT cart_id, user_id
+                        FROM carts
+                        WHERE guest_cart_token = %s AND cart_status = 'active'
+                        FOR UPDATE
+                        """,
+                        (cart_token,),
+                    )
+                    cart = cursor.fetchone()
+                    if cart is None or cart["user_id"] not in (None, user["user_id"]):
+                        raise HTTPException(status_code=404, detail="Cart not found")
+
+                    if cart["user_id"] is None:
+                        # Step 2: does the user already have another active cart?
+                        cursor.execute(
+                            """
+                            SELECT cart_id
+                            FROM carts
+                            WHERE user_id = %s AND cart_status = 'active' AND cart_id <> %s
+                            FOR UPDATE
+                            """,
+                            (user["user_id"], cart["cart_id"]),
+                        )
+                        old_cart = cursor.fetchone()
+
+                        if old_cart is not None:
+                            # Step 3: move its items into this cart (same design + variant adds up, max 100)
+                            cursor.execute(
+                                """
+                                SELECT cart_item_id, design_id, product_variant_id, quantity
+                                FROM cart_items
+                                WHERE cart_id = %s
+                                ORDER BY cart_item_id
+                                """,
+                                (old_cart["cart_id"],),
+                            )
+                            for item in cursor.fetchall():
+                                cursor.execute(
+                                    """
+                                    UPDATE cart_items
+                                    SET quantity = LEAST(quantity + %s, 100), updated_at = now()
+                                    WHERE cart_id = %s AND design_id = %s AND product_variant_id = %s
+                                    RETURNING cart_item_id
+                                    """,
+                                    (item["quantity"], cart["cart_id"], item["design_id"], item["product_variant_id"]),
+                                )
+                                if cursor.fetchone() is None:
+                                    # Not in this cart yet: move the row
+                                    cursor.execute(
+                                        "UPDATE cart_items SET cart_id = %s, updated_at = now() WHERE cart_item_id = %s",
+                                        (cart["cart_id"], item["cart_item_id"]),
+                                    )
+                                else:
+                                    # Merged into an existing row: remove the old one
+                                    cursor.execute(
+                                        "DELETE FROM cart_items WHERE cart_item_id = %s",
+                                        (item["cart_item_id"],),
+                                    )
+
+                            # Step 4: the old cart is retired first (only one active cart per user is allowed)
+                            cursor.execute(
+                                "UPDATE carts SET cart_status = 'abandoned', updated_at = now() WHERE cart_id = %s",
+                                (old_cart["cart_id"],),
+                            )
+
+                        # Step 5: this cart now belongs to the user
+                        cursor.execute(
+                            "UPDATE carts SET user_id = %s, updated_at = now() WHERE cart_id = %s",
+                            (user["user_id"], cart["cart_id"]),
+                        )
+
+                    return build_cart_response(cursor, cart["cart_id"], cart_token)
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.get("/me/orders")
+def get_my_orders(request: Request):
+    try:
+        user = get_current_user(request)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not logged in")
+
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # The user's orders, newest first, with the first item's image
                 cursor.execute(
                     """
                     SELECT
-                        item_title_snapshot AS title,
-                        design_snapshot_json,
-                        product_snapshot_json,
-                        quantity,
-                        unit_price,
-                        line_total,
-                        item_status
-                    FROM order_items
-                    WHERE order_id = %s
-                    ORDER BY order_item_id
+                        o.order_public_code,
+                        o.placed_at,
+                        o.order_status,
+                        o.payment_status,
+                        o.order_total,
+                        (
+                            SELECT COALESCE(SUM(oi.quantity), 0)::int
+                            FROM order_items oi
+                            WHERE oi.order_id = o.order_id
+                        ) AS item_count,
+                        (
+                            SELECT oi.design_snapshot_json ->> 'preview_url'
+                            FROM order_items oi
+                            WHERE oi.order_id = o.order_id
+                            ORDER BY oi.order_item_id
+                            LIMIT 1
+                        ) AS preview_url
+                    FROM orders o
+                    WHERE o.user_id = %s
+                    ORDER BY o.placed_at DESC, o.order_id DESC
                     """,
-                    (order["order_id"],),
+                    (user["user_id"],),
                 )
-                items = [
-                    {
-                        "title": row["title"],
-                        "preview_url": row["design_snapshot_json"].get("preview_url"),
-                        "product_name": row["product_snapshot_json"].get("product_name"),
-                        "color_name": row["product_snapshot_json"].get("color_name"),
-                        "size_code": row["product_snapshot_json"].get("size_code"),
-                        "quantity": row["quantity"],
-                        "unit_price": row["unit_price"],
-                        "line_total": row["line_total"],
-                        "item_status": row["item_status"],
-                    }
-                    for row in cursor.fetchall()
-                ]
+                return cursor.fetchall()
 
-                # Step 4: customer-visible status history, oldest first
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.get("/me/orders/{order_public_code}")
+def get_my_order(order_public_code: str, request: Request):
+    try:
+        user = get_current_user(request)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not logged in")
+
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Only an order that belongs to this user
                 cursor.execute(
-                    """
-                    SELECT status_code, status_message, changed_at
-                    FROM order_status_history
-                    WHERE order_id = %s AND is_customer_visible = true
-                    ORDER BY changed_at, order_status_history_id
+                    ORDER_SQL
+                    + """
+                    WHERE o.order_public_code = %s AND o.user_id = %s
                     """,
-                    (order["order_id"],),
+                    (order_public_code.strip().upper(), user["user_id"]),
                 )
-                history = cursor.fetchall()
+                order = cursor.fetchone()
+                if order is None:
+                    raise HTTPException(status_code=404, detail="Order not found")
 
-                return {
-                    "order_public_code": order["order_public_code"],
-                    "placed_at": order["placed_at"],
-                    "order_status": order["order_status"],
-                    "payment_status": order["payment_status"],
-                    "item_subtotal": order["item_subtotal"],
-                    "discount_total": order["discount_total"],
-                    "discount_name": order["discount_name"],
-                    "shipping_total": order["shipping_total"],
-                    "tax_total": order["tax_total"],
-                    "order_total": order["order_total"],
-                    "shipping_address": shipping_address,
-                    "items": items,
-                    "status_history": history,
-                }
+                return build_order_response(cursor, order)
 
     except psycopg.Error as e:
         print("DATABASE ERROR:", repr(e))
