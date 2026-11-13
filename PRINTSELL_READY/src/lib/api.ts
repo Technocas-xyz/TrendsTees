@@ -1,7 +1,8 @@
 import type {Design} from '@/components/data';
 
-// Base URL of the FastAPI backend (set NEXT_PUBLIC_API_URL to change it)
-export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+// Base URL of the FastAPI backend (set NEXT_PUBLIC_API_URL to change it).
+// Use the same host name as the site (localhost) so the backend's login cookie is sent with credentialed requests.
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export type ApiInterest = {category_id:number; category_name:string; category_slug:string; description:string|null; cover_url?:string|null; design_count?:number};
 export type ApiNiche = {category_name:string; category_slug:string};
@@ -25,12 +26,14 @@ export class ApiError extends Error {
 }
 
 // Request helper: throws an ApiError whose message is the API's {"detail"} text when there is one
-async function request<T>(method:string, path:string, body?:unknown):Promise<T> {
+// withCookies: send the backend's login cookie (needed for /me/... endpoints)
+async function request<T>(method:string, path:string, body?:unknown, withCookies = false):Promise<T> {
   let res:Response;
   try {
     res = await fetch(API_URL + path, {
       method,
       cache: 'no-store',
+      credentials: withCookies ? 'include' : undefined,
       headers: body === undefined ? undefined : {'Content-Type': 'application/json'},
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -191,12 +194,12 @@ export type ApiCheckoutBody = {
 };
 
 export function createCheckout(body:ApiCheckoutBody) {
-  return request<ApiQuote>('POST', '/checkout', body);
+  return request<ApiQuote>('POST', '/checkout', body, true); // cookie: the backend links a logged-in customer to the checkout
 }
 
 // POST /checkout/{id}/place-order. 400 = quote expired or already used, 409 = prices changed
 export function placeOrder(checkoutSessionId:number, cartToken:string) {
-  return request<{order_public_code:string; order_total:string|number}>('POST', '/checkout/' + checkoutSessionId + '/place-order', {cart_token: cartToken});
+  return request<{order_public_code:string; order_total:string|number}>('POST', '/checkout/' + checkoutSessionId + '/place-order', {cart_token: cartToken}, true); // cookie: a logged-in customer's order shows up in My Orders
 }
 
 // GET /orders/track. Note the order totals use different names than the quote (item_subtotal, shipping_total, order_total)
@@ -212,6 +215,45 @@ export type ApiTrackedOrder = {
 export function trackOrder(code:string, email:string) {
   return get<ApiTrackedOrder>('/orders/track?' + new URLSearchParams({code, email}).toString());
 }
+// ---- Logged-in customer's orders (need the backend login cookie) ----
+export type ApiMyOrder = {order_public_code:string; placed_at:string; order_status:string; payment_status:string; order_total:string|number; item_count:number; preview_url:string|null};
+
+// GET /me/orders (newest first)
+export function getMyOrders() {
+  return request<ApiMyOrder[]>('GET', '/me/orders', undefined, true);
+}
+
+// GET /me/orders/{code}: same shape as the tracking response
+export function getMyOrder(code:string) {
+  return request<ApiTrackedOrder>('GET', '/me/orders/' + encodeURIComponent(code), undefined, true);
+}
+
+// ---- Customer accounts (login cookie "tt_session" is set by the backend) ----
+export type ApiUser = {user_id:number; full_name:string; email:string};
+
+export function signupCustomer(body:{full_name:string; email:string; password:string}) {
+  return request<ApiUser>('POST', '/auth/signup', body, true);
+}
+
+export function loginCustomer(body:{email:string; password:string}) {
+  return request<ApiUser>('POST', '/auth/login', body, true);
+}
+
+export function logoutCustomer() {
+  return request<{message:string}>('POST', '/auth/logout', undefined, true);
+}
+
+// The logged-in customer, or null when logged out (401). Other errors (API down) are thrown.
+export async function getMe() {
+  try { return await request<ApiUser>('GET', '/auth/me', undefined, true); }
+  catch (e) { if (e instanceof ApiError && e.status === 401) return null; throw e; }
+}
+
+// Attaches a guest cart to the logged-in customer (merges it with their older cart)
+export function claimCart(token:string) {
+  return request<ApiCart>('POST', '/cart/' + encodeURIComponent(token) + '/claim', undefined, true);
+}
+
 // Converts an API design into the Design type the existing JSX uses.
 // rating / reviews / colors are not in the database, so they are 0 (the UI hides them).
 export function toDesign(a:ApiDesign):Design {

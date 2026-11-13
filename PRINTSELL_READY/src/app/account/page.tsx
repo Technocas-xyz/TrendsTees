@@ -1,2 +1,3 @@
-import {currentUser} from '@/lib/auth';import AccountDashboard from '@/components/AccountDashboard';
-export const runtime='nodejs';export default async function Page(){const user=await currentUser(); return <AccountDashboard user={{name:user!.name,email:user!.email}} section='overview'/>;}
+import AccountDashboard from '@/components/AccountDashboard';
+// Who is signed in is checked in the browser (GET /auth/me), because the login cookie belongs to the API
+export default function Page(){return <AccountDashboard section='overview'/>;}
