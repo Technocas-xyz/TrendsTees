@@ -1746,6 +1746,11 @@ def get_me(request: Request):
         user = get_current_user(request)
         if user is None:
             raise HTTPException(status_code=401, detail="Not logged in")
+
+        # Tell the website whether this user may open the admin pages
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                user["is_admin"] = has_admin_role(cursor, user["user_id"])
         return user
 
     except psycopg.Error as e:
@@ -1918,6 +1923,501 @@ def get_my_order(order_public_code: str, request: Request):
                     raise HTTPException(status_code=404, detail="Order not found")
 
                 return build_order_response(cursor, order)
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+# ---------- Admin ----------
+
+ORDER_STATUSES = [
+    "payment_pending", "confirmed", "printing", "quality_check",
+    "packed", "shipped", "delivered", "cancelled", "refunded",
+]
+
+# Allowed status moves: current status -> statuses it may move to
+ALLOWED_STATUS_MOVES = {
+    "payment_pending": ["confirmed", "cancelled"],
+    "confirmed": ["printing", "cancelled"],
+    "printing": ["quality_check"],
+    "quality_check": ["packed", "printing"],  # printing again = failed quality check, reprint
+    "packed": ["shipped"],
+    "shipped": ["delivered"],
+}
+
+# Message shown to the customer when the admin does not type one
+DEFAULT_STATUS_MESSAGES = {
+    "confirmed": "Your order is confirmed.",
+    "printing": "Your order is being printed.",
+    "quality_check": "Your order is in quality check.",
+    "packed": "Your order is packed and ready to ship.",
+    "shipped": "Your order has shipped.",
+    "delivered": "Your order has been delivered.",
+    "cancelled": "Your order was cancelled.",
+}
+
+
+class OrderStatusBody(BaseModel):
+    new_status: str = Field(min_length=1, max_length=30)
+    message: str | None = Field(default=None, max_length=250)
+    customer_visible: bool = True
+
+
+def has_admin_role(cursor, user_id):
+    # True if the user has an admin role that is not revoked
+    cursor.execute(
+        """
+        SELECT 1
+        FROM user_roles
+        WHERE user_id = %s AND role_code = 'admin' AND revoked_at IS NULL
+        """,
+        (user_id,),
+    )
+    return cursor.fetchone() is not None
+
+
+def require_admin(request):
+    # Must be logged in (401) and have the admin role (403); returns the admin user
+    user = get_current_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not logged in")
+
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            if not has_admin_role(cursor, user["user_id"]):
+                raise HTTPException(status_code=403, detail="Admin access only")
+    return user
+
+
+def write_audit(cursor, request, admin, action_code, order_id, summary, before, after):
+    # One audit_logs row for every admin change
+    cursor.execute(
+        """
+        INSERT INTO audit_logs
+            (acted_by_user_id, action_code, entity_type, entity_id, action_summary,
+             before_data, after_data, ip_address, device_label)
+        VALUES (%s, %s, 'order', %s, %s, %s, %s, %s::inet, %s)
+        """,
+        (
+            admin["user_id"],
+            action_code,
+            order_id,
+            summary,
+            Jsonb(before),
+            Jsonb(after),
+            client_ip(request),
+            (request.headers.get("user-agent") or "")[:150] or None,
+        ),
+    )
+
+
+def build_admin_order_response(cursor, order_public_code):
+    # Same data as /orders/track, plus the private details only admins may see
+    cursor.execute(
+        ORDER_SQL + " WHERE o.order_public_code = %s",
+        (order_public_code,),
+    )
+    order = cursor.fetchone()
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    result = build_order_response(cursor, order)
+
+    # Contact email and the customer account (None for a guest order)
+    cursor.execute(
+        """
+        SELECT o.contact_email, u.user_id, u.full_name, u.email
+        FROM orders o
+        LEFT JOIN app_users u ON u.user_id = o.user_id
+        WHERE o.order_id = %s
+        """,
+        (order["order_id"],),
+    )
+    who = cursor.fetchone()
+    result["contact_email"] = who["contact_email"]
+    result["customer"] = (
+        None if who["user_id"] is None
+        else {"user_id": who["user_id"], "full_name": who["full_name"], "email": who["email"]}
+    )
+
+    # Full shipping address (the customer view only has name, city and country)
+    cursor.execute(
+        """
+        SELECT recipient_name, phone_number, line_1, line_2, city,
+               state_region, postal_code, country_code
+        FROM order_addresses
+        WHERE order_id = %s AND address_type = 'shipping'
+        """,
+        (order["order_id"],),
+    )
+    result["shipping_address"] = cursor.fetchone()
+
+    # Payments
+    cursor.execute(
+        """
+        SELECT payment_public_code, action_type, provider_code, provider_reference,
+               currency_code, amount, payment_status, reason, processed_at
+        FROM payments
+        WHERE order_id = %s
+        ORDER BY payment_id
+        """,
+        (order["order_id"],),
+    )
+    result["payments"] = cursor.fetchall()
+
+    # All status history, including entries the customer cannot see
+    cursor.execute(
+        """
+        SELECT h.status_code, h.status_message, h.is_customer_visible, h.changed_at,
+               h.changed_by_user_id, u.full_name AS changed_by_name
+        FROM order_status_history h
+        LEFT JOIN app_users u ON u.user_id = h.changed_by_user_id
+        WHERE h.order_id = %s
+        ORDER BY h.changed_at, h.order_status_history_id
+        """,
+        (order["order_id"],),
+    )
+    result["status_history"] = cursor.fetchall()
+    return result
+
+
+@app.get("/admin/stats")
+def get_admin_stats(request: Request):
+    try:
+        require_admin(request)
+
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Order counts and revenue (cancelled orders are not counted as revenue)
+                cursor.execute(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (WHERE placed_at >= date_trunc('day', now())) AS orders_today,
+                        COUNT(*) AS orders_total,
+                        COALESCE(SUM(order_total) FILTER (WHERE order_status <> 'cancelled'), 0) AS revenue_total
+                    FROM orders
+                    """
+                )
+                totals = cursor.fetchone()
+
+                # Orders per status (every status is listed, with 0 when there are none)
+                cursor.execute("SELECT order_status, COUNT(*) AS n FROM orders GROUP BY order_status")
+                by_status = {status: 0 for status in ORDER_STATUSES}
+                for row in cursor.fetchall():
+                    by_status[row["order_status"]] = row["n"]
+
+                cursor.execute("SELECT COUNT(*) AS n FROM designs WHERE design_status = 'published'")
+                designs_published = cursor.fetchone()["n"]
+
+                # Customers = users who have a customer role and are not deleted
+                cursor.execute(
+                    """
+                    SELECT COUNT(DISTINCT u.user_id) AS n
+                    FROM app_users u
+                    JOIN user_roles r ON r.user_id = u.user_id
+                    WHERE r.role_code = 'customer' AND r.revoked_at IS NULL AND u.deleted_at IS NULL
+                    """
+                )
+                customers_total = cursor.fetchone()["n"]
+
+                # Last 5 orders
+                cursor.execute(
+                    """
+                    SELECT
+                        o.order_public_code,
+                        o.placed_at,
+                        COALESCE(u.full_name, o.contact_email) AS customer,
+                        o.order_total,
+                        o.order_status
+                    FROM orders o
+                    LEFT JOIN app_users u ON u.user_id = o.user_id
+                    ORDER BY o.placed_at DESC, o.order_id DESC
+                    LIMIT 5
+                    """
+                )
+                recent_orders = cursor.fetchall()
+
+                return {
+                    "orders_today": totals["orders_today"],
+                    "orders_total": totals["orders_total"],
+                    "revenue_total": totals["revenue_total"],
+                    "orders_by_status": by_status,
+                    "designs_published": designs_published,
+                    "customers_total": customers_total,
+                    "recent_orders": recent_orders,
+                }
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+# Shared by the admin order list and its total (fixed text, values are always %s)
+ADMIN_ORDERS_FROM_SQL = """
+    FROM orders o
+    LEFT JOIN app_users u ON u.user_id = o.user_id
+    WHERE (%s::text IS NULL OR o.order_status = %s)
+      AND (%s::text IS NULL OR o.order_public_code ILIKE %s OR o.contact_email ILIKE %s)
+"""
+
+
+@app.get("/admin/orders")
+def get_admin_orders(
+    request: Request,
+    status: Literal[
+        "payment_pending", "confirmed", "printing", "quality_check",
+        "packed", "shipped", "delivered", "cancelled", "refunded",
+    ] | None = None,
+    search: str | None = Query(default=None, max_length=100),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    # ILIKE pattern with the user's % and _ treated as plain characters
+    term = search.strip() if search else ""
+    pattern = None
+    if term:
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = "%" + escaped + "%"
+
+    filter_params = (status, status, pattern, pattern, pattern)
+
+    try:
+        require_admin(request)
+
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Step 1: one page of orders, newest first
+                cursor.execute(
+                    """
+                    SELECT
+                        o.order_public_code,
+                        o.placed_at,
+                        o.contact_email,
+                        u.full_name AS customer_name,
+                        (
+                            SELECT COALESCE(SUM(oi.quantity), 0)::int
+                            FROM order_items oi
+                            WHERE oi.order_id = o.order_id
+                        ) AS item_count,
+                        o.order_total,
+                        o.order_status,
+                        o.payment_status
+                    """
+                    + ADMIN_ORDERS_FROM_SQL
+                    + """
+                    ORDER BY o.placed_at DESC, o.order_id DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    filter_params + (limit, offset),
+                )
+                items = cursor.fetchall()
+
+                # Step 2: how many orders match, ignoring limit/offset
+                cursor.execute(
+                    "SELECT COUNT(*) AS total " + ADMIN_ORDERS_FROM_SQL,
+                    filter_params,
+                )
+                total = cursor.fetchone()["total"]
+
+                return {"items": items, "total": total}
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.get("/admin/orders/{order_public_code}")
+def get_admin_order(order_public_code: str, request: Request):
+    try:
+        require_admin(request)
+
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                return build_admin_order_response(cursor, order_public_code.strip().upper())
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.post("/admin/orders/{order_public_code}/status")
+def change_order_status(order_public_code: str, body: OrderStatusBody, request: Request):
+    code = order_public_code.strip().upper()
+
+    try:
+        admin = require_admin(request)
+
+        with get_connection() as conn:
+            # One transaction: status, history and audit log are saved together or not at all
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # Step 1: lock the order
+                    cursor.execute(
+                        """
+                        SELECT order_id, order_status
+                        FROM orders
+                        WHERE order_public_code = %s
+                        FOR UPDATE
+                        """,
+                        (code,),
+                    )
+                    order = cursor.fetchone()
+                    if order is None:
+                        raise HTTPException(status_code=404, detail="Order not found")
+
+                    # Step 2: only the allowed moves
+                    old_status = order["order_status"]
+                    new_status = body.new_status
+                    if new_status not in ALLOWED_STATUS_MOVES.get(old_status, []):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Cannot move from " + old_status + " to " + new_status,
+                        )
+
+                    # Step 3: save the new status (cancelled also records the time)
+                    cursor.execute(
+                        """
+                        UPDATE orders
+                        SET order_status = %s,
+                            cancelled_at = CASE WHEN %s = 'cancelled' THEN now() ELSE cancelled_at END,
+                            updated_at = now()
+                        WHERE order_id = %s
+                        """,
+                        (new_status, new_status, order["order_id"]),
+                    )
+
+                    # Step 4: history entry (a typed message, or the default for this status)
+                    message = (body.message or "").strip() or DEFAULT_STATUS_MESSAGES[new_status]
+                    cursor.execute(
+                        """
+                        INSERT INTO order_status_history
+                            (order_id, status_code, status_message, is_customer_visible, changed_by_user_id)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (order["order_id"], new_status, message, body.customer_visible, admin["user_id"]),
+                    )
+
+                    # Step 5: audit log
+                    write_audit(
+                        cursor, request, admin, "order_status_changed", order["order_id"],
+                        "Order " + code + " moved from " + old_status + " to " + new_status,
+                        {"order_status": old_status},
+                        {"order_status": new_status, "message": message,
+                         "customer_visible": body.customer_visible},
+                    )
+
+                    return build_admin_order_response(cursor, code)
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+@app.post("/admin/orders/{order_public_code}/mark-paid")
+def mark_order_paid(order_public_code: str, request: Request):
+    code = order_public_code.strip().upper()
+
+    try:
+        admin = require_admin(request)
+
+        with get_connection() as conn:
+            # One transaction: payment, order, history and audit log are saved together or not at all
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # Step 1: lock the order
+                    cursor.execute(
+                        """
+                        SELECT order_id, order_status, payment_status, order_total
+                        FROM orders
+                        WHERE order_public_code = %s
+                        FOR UPDATE
+                        """,
+                        (code,),
+                    )
+                    order = cursor.fetchone()
+                    if order is None:
+                        raise HTTPException(status_code=404, detail="Order not found")
+
+                    # Step 2: only an unpaid order that is not cancelled
+                    if order["payment_status"] != "unpaid":
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Payment status is " + order["payment_status"] + ", not unpaid",
+                        )
+                    if order["order_status"] == "cancelled":
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Cannot mark a cancelled order as paid",
+                        )
+
+                    # Step 3: the pending charge becomes successful (demo payment, marked by hand)
+                    cursor.execute(
+                        """
+                        UPDATE payments
+                        SET payment_status = 'successful', processed_at = now(), updated_at = now()
+                        WHERE order_id = %s AND action_type = 'charge' AND payment_status = 'pending'
+                        RETURNING payment_id
+                        """,
+                        (order["order_id"],),
+                    )
+                    if cursor.fetchone() is None:
+                        # No pending charge exists: record a successful one
+                        cursor.execute(
+                            """
+                            INSERT INTO payments
+                                (order_id, action_type, provider_code, currency_code, amount, payment_status)
+                            VALUES (%s, 'charge', 'demo', 'USD', %s, 'successful')
+                            """,
+                            (order["order_id"], order["order_total"]),
+                        )
+
+                    # Step 4: the order is paid; a waiting order becomes confirmed
+                    new_status = order["order_status"]
+                    if new_status == "payment_pending":
+                        new_status = "confirmed"
+                    cursor.execute(
+                        """
+                        UPDATE orders
+                        SET payment_status = 'paid', order_status = %s, updated_at = now()
+                        WHERE order_id = %s
+                        """,
+                        (new_status, order["order_id"]),
+                    )
+                    if new_status != order["order_status"]:
+                        cursor.execute(
+                            """
+                            INSERT INTO order_status_history
+                                (order_id, status_code, status_message, is_customer_visible, changed_by_user_id)
+                            VALUES (%s, 'confirmed', 'Payment received. Your order is confirmed.', true, %s)
+                            """,
+                            (order["order_id"], admin["user_id"]),
+                        )
+
+                    # Step 5: audit log
+                    write_audit(
+                        cursor, request, admin, "order_marked_paid", order["order_id"],
+                        "Order " + code + " marked as paid",
+                        {"payment_status": "unpaid", "order_status": order["order_status"]},
+                        {"payment_status": "paid", "order_status": new_status},
+                    )
+
+                    return build_admin_order_response(cursor, code)
 
     except psycopg.Error as e:
         print("DATABASE ERROR:", repr(e))
