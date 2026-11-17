@@ -2496,6 +2496,11 @@ def mark_order_paid(order_public_code: str, request: Request):
 
 SUPER_ADMIN_ONLY = "Only a Super Admin can give or remove the admin role."
 LAST_ADMIN = "There must always be at least one active Super Admin."
+ROLES_SUPER_ONLY = "Only a Super Admin can create, edit or delete roles."
+CANNOT_GIVE = "You can't give permissions you don't have."
+SUPER_TARGET = "Only a Super Admin can change a Super Admin's account."
+OWN_ROLES = "You can't change your own roles."
+OWN_ROLES_REMOVE = "You can't remove your own roles."
 
 PermissionCode = Annotated[str, StringConstraints(max_length=60)]
 RoleCode = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{1,29}$")]
@@ -2536,6 +2541,31 @@ def like_pattern(text):
     if not term:
         return None
     return "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def require_super_admin_for_roles(admin):
+    # Creating, editing and deleting roles is for Super Admins only
+    if not admin["is_super_admin"]:
+        raise HTTPException(status_code=403, detail=ROLES_SUPER_ONLY)
+
+
+def check_can_give_roles(cursor, admin, role_codes):
+    # A Super Admin may give any role; everyone else only roles whose permissions they have themselves
+    if admin["is_super_admin"] or not role_codes:
+        return
+    cursor.execute(
+        "SELECT DISTINCT permission_code FROM admin_role_permissions WHERE role_code = ANY(%s)",
+        (role_codes,),
+    )
+    for row in cursor.fetchall():
+        if row["permission_code"] not in admin["permissions"]:
+            raise HTTPException(status_code=403, detail=CANNOT_GIVE)
+
+
+def check_not_super_admin_target(cursor, admin, target_user_id):
+    # Only a Super Admin may change the account of a Super Admin
+    if not admin["is_super_admin"] and has_admin_role(cursor, target_user_id):
+        raise HTTPException(status_code=403, detail=SUPER_TARGET)
 
 
 def lock_admin_role(cursor):
@@ -2706,6 +2736,7 @@ def get_admin_roles(request: Request):
 def create_role(body: RoleCreateBody, request: Request):
     try:
         admin = require_permission(request, "users.manage")
+        require_super_admin_for_roles(admin)
 
         with get_connection() as conn:
             with conn.transaction():
@@ -2752,6 +2783,7 @@ def create_role(body: RoleCreateBody, request: Request):
 def update_role(role_code: str, body: RoleUpdateBody, request: Request):
     try:
         admin = require_permission(request, "users.manage")
+        require_super_admin_for_roles(admin)
 
         with get_connection() as conn:
             with conn.transaction():
@@ -2807,6 +2839,7 @@ def update_role(role_code: str, body: RoleUpdateBody, request: Request):
 def delete_role(role_code: str, request: Request):
     try:
         admin = require_permission(request, "users.manage")
+        require_super_admin_for_roles(admin)
 
         with get_connection() as conn:
             with conn.transaction():
@@ -2878,6 +2911,8 @@ def create_admin_user(body: AdminUserCreateBody, request: Request):
                     role_codes = check_staff_roles(cursor, body.roles)
                     if "admin" in role_codes and not admin["is_super_admin"]:
                         raise HTTPException(status_code=400, detail=SUPER_ADMIN_ONLY)
+                    # Everyone else may only give permissions they have themselves
+                    check_can_give_roles(cursor, admin, role_codes)
 
                     # Step 2: the email must be new
                     cursor.execute("SELECT 1 FROM app_users WHERE lower(email) = %s", (body.email,))
@@ -2935,6 +2970,9 @@ def set_user_roles(user_id: int, body: UserRolesBody, request: Request):
                     if target is None:
                         raise HTTPException(status_code=404, detail="User not found")
 
+                    # Only a Super Admin may change a Super Admin
+                    check_not_super_admin_target(cursor, admin, user_id)
+
                     # Step 2: work out what changes (only staff roles are managed here)
                     wanted = check_staff_roles(cursor, body.roles)
                     cursor.execute(
@@ -2950,14 +2988,22 @@ def set_user_roles(user_id: int, body: UserRolesBody, request: Request):
                     to_add = [code for code in wanted if code not in current]
                     to_remove = [code for code in current if code not in wanted]
 
-                    # Step 3: safety rules for the admin role
+                    # Step 3: safety rules
+                    # Nobody changes their own roles; a Super Admin may only add roles to themselves
+                    if user_id == admin["user_id"] and (to_add or to_remove):
+                        if "admin" in to_remove:
+                            raise HTTPException(status_code=400, detail="You cannot remove your own admin role.")
+                        if not admin["is_super_admin"]:
+                            raise HTTPException(status_code=403, detail=OWN_ROLES)
+                        if to_remove:
+                            raise HTTPException(status_code=403, detail=OWN_ROLES_REMOVE)
                     if ("admin" in to_add or "admin" in to_remove) and not admin["is_super_admin"]:
                         raise HTTPException(status_code=400, detail=SUPER_ADMIN_ONLY)
                     if "admin" in to_remove:
-                        if user_id == admin["user_id"]:
-                            raise HTTPException(status_code=400, detail="You cannot remove your own admin role.")
                         if target["account_status"] == "active" and count_other_active_admins(cursor, user_id) == 0:
                             raise HTTPException(status_code=400, detail=LAST_ADMIN)
+                    # Everyone else may only give roles whose permissions they have themselves
+                    check_can_give_roles(cursor, admin, to_add)
 
                     # Step 4: revoke removed roles, add new ones
                     if to_remove:
@@ -3008,6 +3054,9 @@ def change_account_status(request, user_id, disable):
                     if target is None:
                         raise HTTPException(status_code=404, detail="User not found")
                     old_status = target["account_status"]
+
+                    # Only a Super Admin may disable or enable a Super Admin
+                    check_not_super_admin_target(cursor, admin, user_id)
 
                     if disable:
                         # Step 2: safety rules
