@@ -254,6 +254,24 @@ export function claimCart(token:string) {
   return request<ApiCart>('POST', '/cart/' + encodeURIComponent(token) + '/claim', undefined, true);
 }
 
+// ---- Shipping locations (no login needed) ----
+export type ApiCountry = {code:string; name:string; phone_code:string};
+export type ApiState = {state_id:number; state_code:string; state_name:string};
+export type ApiCity = {city_id:number; city_name:string};
+
+export function getCountries() {
+  return get<ApiCountry[]>('/locations/countries');
+}
+
+export function getStates(countryCode:string) {
+  return get<ApiState[]>('/locations/countries/' + encodeURIComponent(countryCode) + '/states');
+}
+
+// A state can have ~1900 cities
+export function getCities(stateId:number|string) {
+  return get<ApiCity[]>('/locations/states/' + encodeURIComponent(String(stateId)) + '/cities');
+}
+
 // Converts an API design into the Design type the existing JSX uses.
 // rating / reviews / colors are not in the database, so they are 0 (the UI hides them).
 export function toDesign(a:ApiDesign):Design {

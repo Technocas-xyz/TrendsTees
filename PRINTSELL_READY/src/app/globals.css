@@ -17,3 +17,11 @@
 .header-actions .acct-menu .acct-divider{height:1px;margin:6px 0;background:var(--border)}
 .header-actions .acct-menu .acct-signout{color:var(--red)}
 .header-actions .acct-menu .acct-signout:hover{background:#fdecef}
+
+/* Checkout address form: selects look like inputs; phone number with the country's phone code as a prefix */
+.form-grid select{height:47px;border:1px solid #dfe1e7;padding:0 12px;border-radius:7px;font-weight:400;background:#fff;width:100%}
+.form-grid select:disabled,.form-grid input:disabled{background:#f4f5f7;cursor:not-allowed}
+.phone-field{display:flex}
+.phone-field span{display:flex;align-items:center;padding:0 12px;border:1px solid #dfe1e7;border-right:0;border-radius:7px 0 0 7px;background:#f4f5f7;font-weight:600}
+.phone-field input{flex:1;min-width:0;border-radius:0 7px 7px 0}
+.phone-field input:only-child{border-radius:7px}

@@ -16,5 +16,6 @@ export const designs:Design[]=[
 export const interests=['Animals & Pets','Faith & Inspiration','Fitness & Gym','Gaming','Patriotic','Summer Vibes','Car Enthusiast','Mom Life'];
 export const types=[{id:'tshirts',name:'T-Shirts',price:16.99},{id:'hoodies',name:'Hoodies',price:29.99},{id:'sweatshirts',name:'Sweatshirts',price:26.99},{id:'tank-tops',name:'Tank Tops',price:18.99},{id:'long-sleeve',name:'Long Sleeve',price:22.99},{id:'caps',name:'Hats & Caps',price:19.99},{id:'dtf',name:'DTF Transfers',price:4.99}];
 export type CartItem={cartId:string;designId:string;designName:string;productId:string;productName:string;color:string|null;size:string;placement:string;quantity:number;unitPrice:number};
-export type Shipping={firstName:string;lastName:string;email:string;phone:string;address:string;apartment:string;city:string;state:string;zip:string;country:string;shippingMethod:string};
+// Checkout shipping form. country = country code (US), stateId is used to load the cities, state = state name
+export type Shipping={fullName:string;email:string;phone:string;country:string;stateId:string;state:string;city:string;address:string;apartment:string;zip:string;shippingMethod:string};
 
