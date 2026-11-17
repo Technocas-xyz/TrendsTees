@@ -3353,6 +3353,8 @@ DESIGN_STATUS_MOVES = {
     "draft": ["published", "archived"],
     "published": ["hidden", "archived"],
     "hidden": ["published", "archived"],
+    "reported": ["archived"],
+    "removed": ["archived"],
 }
 
 
