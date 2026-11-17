@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import ipaddress
 import os
+import re
 import secrets
 import string
 import threading
@@ -1033,7 +1034,10 @@ def create_checkout(body: CheckoutBody, request: Request):
                     if cart is None:
                         raise HTTPException(status_code=404, detail="Cart not found")
 
-                    # Step 2: calculate the quote (also rejects an empty cart)
+                    # Step 2: the address must be real (country, state, city); saves the proper names
+                    validate_shipping_address(cursor, address)
+
+                    # Step 3: calculate the quote (also rejects an empty cart)
                     quote = calculate_quote(cursor, cart["cart_id"], body.shipping_method_code)
 
                     # Step 3: older open/ready sessions for this cart are no longer valid
@@ -1747,10 +1751,18 @@ def get_me(request: Request):
         if user is None:
             raise HTTPException(status_code=401, detail="Not logged in")
 
-        # Tell the website whether this user may open the admin pages
+        # Tell the website which admin pages and actions this user may use
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                user["is_admin"] = has_admin_role(cursor, user["user_id"])
+                roles = get_user_roles(cursor, user["user_id"])
+                permissions = get_user_permissions(cursor, user["user_id"])
+
+        is_super_admin = any(role["role_code"] == "admin" for role in roles)
+        user["is_admin"] = is_super_admin  # kept for older callers; same as is_super_admin
+        user["is_super_admin"] = is_super_admin
+        user["is_staff"] = any(role["is_staff"] for role in roles)
+        user["roles"] = [{"role_code": r["role_code"], "role_name": r["role_name"]} for r in roles]
+        user["permissions"] = permissions
         return user
 
     except psycopg.Error as e:
@@ -1980,32 +1992,84 @@ def has_admin_role(cursor, user_id):
     return cursor.fetchone() is not None
 
 
-def require_admin(request):
-    # Must be logged in (401) and have the admin role (403); returns the admin user
-    user = get_current_user(request)
+def get_user_roles(cursor, user_id):
+    # The user's active (not revoked) roles
+    cursor.execute(
+        """
+        SELECT r.role_code, r.role_name, r.is_staff
+        FROM user_roles ur
+        JOIN admin_roles r ON r.role_code = ur.role_code
+        WHERE ur.user_id = %s AND ur.revoked_at IS NULL
+        ORDER BY r.is_system DESC, r.role_name
+        """,
+        (user_id,),
+    )
+    return cursor.fetchall()
+
+
+def get_user_permissions(cursor, user_id):
+    # Permission codes of the user's active roles, in display order
+    cursor.execute(
+        "SELECT role_code FROM user_roles WHERE user_id = %s AND revoked_at IS NULL",
+        (user_id,),
+    )
+    role_codes = [row["role_code"] for row in cursor.fetchall()]
+    if not role_codes:
+        return []
+
+    if "admin" in role_codes:
+        # Super Admin has every permission, no role_permission rows needed
+        cursor.execute("SELECT permission_code FROM admin_permissions ORDER BY sort_order, permission_code")
+    else:
+        # Everyone else: the union of the permissions of their roles
+        cursor.execute(
+            """
+            SELECT DISTINCT p.permission_code, p.sort_order
+            FROM admin_role_permissions rp
+            JOIN admin_permissions p ON p.permission_code = rp.permission_code
+            WHERE rp.role_code = ANY(%s)
+            ORDER BY p.sort_order, p.permission_code
+            """,
+            (role_codes,),
+        )
+    return [row["permission_code"] for row in cursor.fetchall()]
+
+
+def require_permission(request, permission_code):
+    # Not logged in or account not active -> 401; missing permission -> 403.
+    # Returns the user with "permissions", "roles" and "is_super_admin" added.
+    user = get_current_user(request)  # only returns users whose account is active
     if user is None:
         raise HTTPException(status_code=401, detail="Not logged in")
 
     with get_connection() as conn:
         with conn.cursor() as cursor:
-            if not has_admin_role(cursor, user["user_id"]):
-                raise HTTPException(status_code=403, detail="Admin access only")
+            roles = get_user_roles(cursor, user["user_id"])
+            permissions = get_user_permissions(cursor, user["user_id"])
+
+    if permission_code not in permissions:
+        raise HTTPException(status_code=403, detail="You don't have permission for this.")
+
+    user["permissions"] = permissions
+    user["roles"] = roles
+    user["is_super_admin"] = any(role["role_code"] == "admin" for role in roles)
     return user
 
 
-def write_audit(cursor, request, admin, action_code, order_id, summary, before, after):
+def write_audit(cursor, request, admin, action_code, entity_id, summary, before, after, entity_type="order"):
     # One audit_logs row for every admin change
     cursor.execute(
         """
         INSERT INTO audit_logs
             (acted_by_user_id, action_code, entity_type, entity_id, action_summary,
              before_data, after_data, ip_address, device_label)
-        VALUES (%s, %s, 'order', %s, %s, %s, %s, %s::inet, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::inet, %s)
         """,
         (
             admin["user_id"],
             action_code,
-            order_id,
+            entity_type,
+            entity_id,
             summary,
             Jsonb(before),
             Jsonb(after),
@@ -2088,7 +2152,7 @@ def build_admin_order_response(cursor, order_public_code):
 @app.get("/admin/stats")
 def get_admin_stats(request: Request):
     try:
-        require_admin(request)
+        admin = require_permission(request, "dashboard.view")
 
         with get_connection() as conn:
             with conn.cursor() as cursor:
@@ -2144,7 +2208,8 @@ def get_admin_stats(request: Request):
                 return {
                     "orders_today": totals["orders_today"],
                     "orders_total": totals["orders_total"],
-                    "revenue_total": totals["revenue_total"],
+                    # Revenue is finance data: hidden (null) without finance.view
+                    "revenue_total": totals["revenue_total"] if "finance.view" in admin["permissions"] else None,
                     "orders_by_status": by_status,
                     "designs_published": designs_published,
                     "customers_total": customers_total,
@@ -2189,7 +2254,7 @@ def get_admin_orders(
     filter_params = (status, status, pattern, pattern, pattern)
 
     try:
-        require_admin(request)
+        require_permission(request, "orders.view")
 
         with get_connection() as conn:
             with conn.cursor() as cursor:
@@ -2239,7 +2304,7 @@ def get_admin_orders(
 @app.get("/admin/orders/{order_public_code}")
 def get_admin_order(order_public_code: str, request: Request):
     try:
-        require_admin(request)
+        require_permission(request, "orders.view")
 
         with get_connection() as conn:
             with conn.cursor() as cursor:
@@ -2258,7 +2323,7 @@ def change_order_status(order_public_code: str, body: OrderStatusBody, request: 
     code = order_public_code.strip().upper()
 
     try:
-        admin = require_admin(request)
+        admin = require_permission(request, "orders.manage")
 
         with get_connection() as conn:
             # One transaction: status, history and audit log are saved together or not at all
@@ -2334,7 +2399,7 @@ def mark_order_paid(order_public_code: str, request: Request):
     code = order_public_code.strip().upper()
 
     try:
-        admin = require_admin(request)
+        admin = require_permission(request, "finance.manage")
 
         with get_connection() as conn:
             # One transaction: payment, order, history and audit log are saved together or not at all
@@ -2425,3 +2490,801 @@ def mark_order_paid(order_public_code: str, request: Request):
             status_code=503,
             detail="Database connection or query failed"
         )
+
+
+# ---------- Roles, admin users, locations ----------
+
+SUPER_ADMIN_ONLY = "Only a Super Admin can give or remove the admin role."
+LAST_ADMIN = "There must always be at least one active Super Admin."
+
+PermissionCode = Annotated[str, StringConstraints(max_length=60)]
+RoleCode = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{1,29}$")]
+RoleName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
+
+
+class RoleCreateBody(BaseModel):
+    role_code: RoleCode
+    role_name: RoleName
+    description: str | None = Field(default=None, max_length=250)
+    permissions: list[PermissionCode] = Field(default_factory=list, max_length=50)
+
+
+class RoleUpdateBody(BaseModel):
+    role_name: RoleName
+    description: str | None = Field(default=None, max_length=250)
+    permissions: list[PermissionCode] = Field(default_factory=list, max_length=50)
+
+
+class AdminUserCreateBody(BaseModel):
+    full_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
+    email: Email
+    password: str = Field(min_length=12, max_length=128)  # temporary password
+    roles: list[RoleCode] = Field(min_length=1, max_length=20)
+
+
+class UserRolesBody(BaseModel):
+    roles: list[RoleCode] = Field(max_length=20)
+
+
+class CountrySettingBody(BaseModel):
+    is_shipping_enabled: bool
+
+
+def like_pattern(text):
+    # "%text%" for ILIKE, with the user's % and _ treated as plain characters
+    term = (text or "").strip()
+    if not term:
+        return None
+    return "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def lock_admin_role(cursor):
+    # Serialises changes that could remove the last Super Admin
+    cursor.execute("SELECT role_code FROM admin_roles WHERE role_code = 'admin' FOR UPDATE")
+
+
+def count_other_active_admins(cursor, user_id):
+    # Active, non-deleted users with the admin role, not counting this user
+    cursor.execute(
+        """
+        SELECT COUNT(DISTINCT u.user_id) AS n
+        FROM user_roles ur
+        JOIN app_users u ON u.user_id = ur.user_id
+        WHERE ur.role_code = 'admin' AND ur.revoked_at IS NULL
+          AND u.account_status = 'active' AND u.deleted_at IS NULL
+          AND u.user_id <> %s
+        """,
+        (user_id,),
+    )
+    return cursor.fetchone()["n"]
+
+
+def check_permission_codes(cursor, codes):
+    # Every code must exist; returns the codes without duplicates
+    codes = list(dict.fromkeys(codes))
+    if codes:
+        cursor.execute(
+            "SELECT permission_code FROM admin_permissions WHERE permission_code = ANY(%s)",
+            (codes,),
+        )
+        known = {row["permission_code"] for row in cursor.fetchall()}
+        unknown = [code for code in codes if code not in known]
+        if unknown:
+            raise HTTPException(status_code=400, detail="Unknown permission: " + ", ".join(unknown))
+    return codes
+
+
+def check_staff_roles(cursor, role_codes):
+    # Every role must exist and be a staff role; returns the codes without duplicates
+    role_codes = list(dict.fromkeys(role_codes))
+    if role_codes:
+        cursor.execute(
+            "SELECT role_code FROM admin_roles WHERE role_code = ANY(%s) AND is_staff = true",
+            (role_codes,),
+        )
+        known = {row["role_code"] for row in cursor.fetchall()}
+        unknown = [code for code in role_codes if code not in known]
+        if unknown:
+            raise HTTPException(status_code=400, detail="Unknown or non-staff role: " + ", ".join(unknown))
+    return role_codes
+
+
+def fetch_roles(cursor, role_code=None):
+    # Roles except 'customer' with their permission codes and number of users holding them
+    cursor.execute(
+        """
+        SELECT
+            r.role_code,
+            r.role_name,
+            r.description,
+            r.is_system,
+            r.is_staff,
+            CASE WHEN r.role_code = 'admin' THEN (
+                    SELECT COALESCE(array_agg(p.permission_code ORDER BY p.sort_order, p.permission_code), '{}')
+                    FROM admin_permissions p
+                 ) ELSE (
+                    SELECT COALESCE(array_agg(p.permission_code ORDER BY p.sort_order, p.permission_code), '{}')
+                    FROM admin_role_permissions rp
+                    JOIN admin_permissions p ON p.permission_code = rp.permission_code
+                    WHERE rp.role_code = r.role_code
+                 ) END AS permissions,
+            (
+                SELECT COUNT(DISTINCT ur.user_id)::int
+                FROM user_roles ur
+                WHERE ur.role_code = r.role_code AND ur.revoked_at IS NULL
+            ) AS user_count
+        FROM admin_roles r
+        WHERE r.role_code <> 'customer'
+          AND (%s::text IS NULL OR r.role_code = %s)
+        ORDER BY r.is_system DESC, r.role_name
+        """,
+        (role_code, role_code),
+    )
+    return cursor.fetchall()
+
+
+def fetch_users(cursor, search=None, user_id=None, staff_only=True):
+    # Users (staff only, or any) with their active staff roles
+    pattern = like_pattern(search)
+    cursor.execute(
+        """
+        SELECT
+            u.user_id,
+            u.full_name,
+            u.email,
+            u.account_status,
+            u.last_login_at,
+            COALESCE((
+                SELECT json_agg(json_build_object('role_code', r.role_code, 'role_name', r.role_name)
+                                ORDER BY r.role_name)
+                FROM user_roles ur
+                JOIN admin_roles r ON r.role_code = ur.role_code
+                WHERE ur.user_id = u.user_id AND ur.revoked_at IS NULL AND r.is_staff = true
+            ), '[]'::json) AS roles
+        FROM app_users u
+        WHERE u.deleted_at IS NULL
+          AND (%s = false OR EXISTS (
+                SELECT 1
+                FROM user_roles ur
+                JOIN admin_roles r ON r.role_code = ur.role_code
+                WHERE ur.user_id = u.user_id AND ur.revoked_at IS NULL AND r.is_staff = true
+          ))
+          AND (%s::text IS NULL OR u.full_name ILIKE %s OR u.email ILIKE %s)
+          AND (%s::bigint IS NULL OR u.user_id = %s)
+        ORDER BY u.full_name, u.user_id
+        """,
+        (staff_only, pattern, pattern, pattern, user_id, user_id),
+    )
+    return cursor.fetchall()
+
+
+def db_error_503(e):
+    print("DATABASE ERROR:", repr(e))
+    return HTTPException(status_code=503, detail="Database connection or query failed")
+
+
+@app.get("/admin/permissions")
+def get_admin_permissions(request: Request):
+    try:
+        require_permission(request, "users.view")
+
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT permission_code, module, action, label
+                    FROM admin_permissions
+                    ORDER BY sort_order, permission_code
+                    """
+                )
+                # Grouped by module; modules keep the order of their first permission
+                groups = {}
+                for row in cursor.fetchall():
+                    groups.setdefault(row["module"], []).append(
+                        {"permission_code": row["permission_code"], "action": row["action"], "label": row["label"]}
+                    )
+                return [{"module": module, "permissions": items} for module, items in groups.items()]
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.get("/admin/roles")
+def get_admin_roles(request: Request):
+    try:
+        require_permission(request, "users.view")
+
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                return fetch_roles(cursor)
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.post("/admin/roles")
+def create_role(body: RoleCreateBody, request: Request):
+    try:
+        admin = require_permission(request, "users.manage")
+
+        with get_connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # Step 1: the code must be new and every permission must exist
+                    cursor.execute("SELECT 1 FROM admin_roles WHERE role_code = %s", (body.role_code,))
+                    if cursor.fetchone() is not None:
+                        raise HTTPException(status_code=409, detail="This role code already exists.")
+                    codes = check_permission_codes(cursor, body.permissions)
+
+                    # Step 2: save the role (custom roles are staff roles) and its permissions
+                    cursor.execute(
+                        """
+                        INSERT INTO admin_roles (role_code, role_name, description, is_system, is_staff)
+                        VALUES (%s, %s, %s, false, true)
+                        """,
+                        (body.role_code, body.role_name, (body.description or "").strip() or None),
+                    )
+                    for code in codes:
+                        cursor.execute(
+                            "INSERT INTO admin_role_permissions (role_code, permission_code) VALUES (%s, %s)",
+                            (body.role_code, code),
+                        )
+
+                    # Step 3: audit log (roles have a text key, so entity_id is 0 and the code is in the data)
+                    role = fetch_roles(cursor, body.role_code)[0]
+                    write_audit(
+                        cursor, request, admin, "role_created", 0,
+                        "Created role " + body.role_code,
+                        {}, {"role_code": body.role_code, "role_name": role["role_name"],
+                             "description": role["description"], "permissions": codes},
+                        entity_type="role",
+                    )
+                    return role
+
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="This role code already exists.")
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.put("/admin/roles/{role_code}")
+def update_role(role_code: str, body: RoleUpdateBody, request: Request):
+    try:
+        admin = require_permission(request, "users.manage")
+
+        with get_connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # Step 1: the role must exist and must not be a system role
+                    cursor.execute(
+                        "SELECT is_system FROM admin_roles WHERE role_code = %s FOR UPDATE",
+                        (role_code,),
+                    )
+                    role = cursor.fetchone()
+                    if role is None:
+                        raise HTTPException(status_code=404, detail="Role not found")
+                    if role["is_system"]:
+                        raise HTTPException(status_code=400, detail="System roles cannot be edited.")
+
+                    codes = check_permission_codes(cursor, body.permissions)
+                    before = fetch_roles(cursor, role_code)[0]
+
+                    # Step 2: new name and description, then replace the permission rows
+                    cursor.execute(
+                        """
+                        UPDATE admin_roles
+                        SET role_name = %s, description = %s, updated_at = now()
+                        WHERE role_code = %s
+                        """,
+                        (body.role_name, (body.description or "").strip() or None, role_code),
+                    )
+                    cursor.execute("DELETE FROM admin_role_permissions WHERE role_code = %s", (role_code,))
+                    for code in codes:
+                        cursor.execute(
+                            "INSERT INTO admin_role_permissions (role_code, permission_code) VALUES (%s, %s)",
+                            (role_code, code),
+                        )
+
+                    # Step 3: audit log
+                    after = fetch_roles(cursor, role_code)[0]
+                    write_audit(
+                        cursor, request, admin, "role_updated", 0,
+                        "Updated role " + role_code,
+                        {"role_code": role_code, "role_name": before["role_name"],
+                         "description": before["description"], "permissions": before["permissions"]},
+                        {"role_code": role_code, "role_name": after["role_name"],
+                         "description": after["description"], "permissions": after["permissions"]},
+                        entity_type="role",
+                    )
+                    return after
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.delete("/admin/roles/{role_code}")
+def delete_role(role_code: str, request: Request):
+    try:
+        admin = require_permission(request, "users.manage")
+
+        with get_connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # Step 1: the role must exist and must not be a system role
+                    cursor.execute(
+                        "SELECT is_system FROM admin_roles WHERE role_code = %s FOR UPDATE",
+                        (role_code,),
+                    )
+                    role = cursor.fetchone()
+                    if role is None:
+                        raise HTTPException(status_code=404, detail="Role not found")
+                    if role["is_system"]:
+                        raise HTTPException(status_code=400, detail="System roles cannot be deleted.")
+
+                    # Step 2: nobody may still have it
+                    before = fetch_roles(cursor, role_code)[0]
+                    if before["user_count"] > 0:
+                        n = before["user_count"]
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Role is still assigned to " + str(n) + (" user" if n == 1 else " users"),
+                        )
+
+                    # Step 3: remove the old (revoked) assignments, then the role; its permission rows cascade
+                    cursor.execute("DELETE FROM user_roles WHERE role_code = %s", (role_code,))
+                    cursor.execute("DELETE FROM admin_roles WHERE role_code = %s", (role_code,))
+
+                    # Step 4: audit log
+                    write_audit(
+                        cursor, request, admin, "role_deleted", 0,
+                        "Deleted role " + role_code,
+                        {"role_code": role_code, "role_name": before["role_name"],
+                         "description": before["description"], "permissions": before["permissions"]},
+                        {},
+                        entity_type="role",
+                    )
+                    return {"message": "Role deleted"}
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.get("/admin/users")
+def get_admin_users(request: Request, search: str | None = Query(default=None, max_length=100)):
+    try:
+        require_permission(request, "users.view")
+
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                return fetch_users(cursor, search=search)
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.post("/admin/users")
+def create_admin_user(body: AdminUserCreateBody, request: Request):
+    # Hash first (CPU work), before opening the database transaction
+    password_hash = hash_password(body.password)
+
+    try:
+        admin = require_permission(request, "users.manage")
+
+        with get_connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # Step 1: only a Super Admin can create another Super Admin
+                    role_codes = check_staff_roles(cursor, body.roles)
+                    if "admin" in role_codes and not admin["is_super_admin"]:
+                        raise HTTPException(status_code=400, detail=SUPER_ADMIN_ONLY)
+
+                    # Step 2: the email must be new
+                    cursor.execute("SELECT 1 FROM app_users WHERE lower(email) = %s", (body.email,))
+                    if cursor.fetchone() is not None:
+                        raise HTTPException(status_code=409, detail="This email is already registered.")
+
+                    # Step 3: active user with the chosen roles
+                    cursor.execute(
+                        """
+                        INSERT INTO app_users (full_name, email, password_hash, account_status)
+                        VALUES (%s, %s, %s, 'active')
+                        RETURNING user_id
+                        """,
+                        (body.full_name, body.email, password_hash),
+                    )
+                    user_id = cursor.fetchone()["user_id"]
+                    for code in role_codes:
+                        cursor.execute(
+                            "INSERT INTO user_roles (user_id, role_code, assigned_by_user_id) VALUES (%s, %s, %s)",
+                            (user_id, code, admin["user_id"]),
+                        )
+
+                    # Step 4: audit log (never the password)
+                    write_audit(
+                        cursor, request, admin, "admin_user_created", user_id,
+                        "Created admin user " + body.email,
+                        {}, {"email": body.email, "full_name": body.full_name, "roles": role_codes},
+                        entity_type="user",
+                    )
+                    return fetch_users(cursor, user_id=user_id, staff_only=False)[0]
+
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="This email is already registered.")
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.put("/admin/users/{user_id}/roles")
+def set_user_roles(user_id: int, body: UserRolesBody, request: Request):
+    try:
+        admin = require_permission(request, "users.manage")
+
+        with get_connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    lock_admin_role(cursor)
+
+                    # Step 1: the user must exist
+                    cursor.execute(
+                        "SELECT user_id, account_status FROM app_users WHERE user_id = %s AND deleted_at IS NULL FOR UPDATE",
+                        (user_id,),
+                    )
+                    target = cursor.fetchone()
+                    if target is None:
+                        raise HTTPException(status_code=404, detail="User not found")
+
+                    # Step 2: work out what changes (only staff roles are managed here)
+                    wanted = check_staff_roles(cursor, body.roles)
+                    cursor.execute(
+                        """
+                        SELECT ur.role_code
+                        FROM user_roles ur
+                        JOIN admin_roles r ON r.role_code = ur.role_code
+                        WHERE ur.user_id = %s AND ur.revoked_at IS NULL AND r.is_staff = true
+                        """,
+                        (user_id,),
+                    )
+                    current = [row["role_code"] for row in cursor.fetchall()]
+                    to_add = [code for code in wanted if code not in current]
+                    to_remove = [code for code in current if code not in wanted]
+
+                    # Step 3: safety rules for the admin role
+                    if ("admin" in to_add or "admin" in to_remove) and not admin["is_super_admin"]:
+                        raise HTTPException(status_code=400, detail=SUPER_ADMIN_ONLY)
+                    if "admin" in to_remove:
+                        if user_id == admin["user_id"]:
+                            raise HTTPException(status_code=400, detail="You cannot remove your own admin role.")
+                        if target["account_status"] == "active" and count_other_active_admins(cursor, user_id) == 0:
+                            raise HTTPException(status_code=400, detail=LAST_ADMIN)
+
+                    # Step 4: revoke removed roles, add new ones
+                    if to_remove:
+                        cursor.execute(
+                            """
+                            UPDATE user_roles
+                            SET revoked_at = now()
+                            WHERE user_id = %s AND role_code = ANY(%s) AND revoked_at IS NULL
+                            """,
+                            (user_id, to_remove),
+                        )
+                    for code in to_add:
+                        cursor.execute(
+                            "INSERT INTO user_roles (user_id, role_code, assigned_by_user_id) VALUES (%s, %s, %s)",
+                            (user_id, code, admin["user_id"]),
+                        )
+
+                    # Step 5: audit log (only when something actually changed)
+                    if to_add or to_remove:
+                        write_audit(
+                            cursor, request, admin, "user_roles_changed", user_id,
+                            "Changed roles of user " + str(user_id),
+                            {"roles": current}, {"roles": wanted},
+                            entity_type="user",
+                        )
+                    return fetch_users(cursor, user_id=user_id, staff_only=False)[0]
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+def change_account_status(request, user_id, disable):
+    # Shared by /disable and /enable
+    try:
+        admin = require_permission(request, "users.manage")
+
+        with get_connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    lock_admin_role(cursor)
+
+                    # Step 1: the user must exist
+                    cursor.execute(
+                        "SELECT user_id, account_status FROM app_users WHERE user_id = %s AND deleted_at IS NULL FOR UPDATE",
+                        (user_id,),
+                    )
+                    target = cursor.fetchone()
+                    if target is None:
+                        raise HTTPException(status_code=404, detail="User not found")
+                    old_status = target["account_status"]
+
+                    if disable:
+                        # Step 2: safety rules
+                        if user_id == admin["user_id"]:
+                            raise HTTPException(status_code=400, detail="You cannot disable your own account.")
+                        if old_status == "closed":
+                            raise HTTPException(status_code=400, detail="A closed account cannot be disabled.")
+                        if (old_status == "active" and has_admin_role(cursor, user_id)
+                                and count_other_active_admins(cursor, user_id) == 0):
+                            raise HTTPException(status_code=400, detail=LAST_ADMIN)
+                        new_status = "suspended"
+
+                        # Step 3: log them out everywhere
+                        cursor.execute(
+                            """
+                            UPDATE user_sessions
+                            SET revoked_at = now(), updated_at = now()
+                            WHERE user_id = %s AND revoked_at IS NULL
+                            """,
+                            (user_id,),
+                        )
+                    else:
+                        if old_status not in ("suspended", "disabled"):
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Account status is " + old_status + ", so it cannot be enabled.",
+                            )
+                        new_status = "active"
+
+                    # Step 4: save the status and write the audit log
+                    cursor.execute(
+                        "UPDATE app_users SET account_status = %s, updated_at = now() WHERE user_id = %s",
+                        (new_status, user_id),
+                    )
+                    write_audit(
+                        cursor, request, admin, "user_disabled" if disable else "user_enabled", user_id,
+                        ("Disabled" if disable else "Enabled") + " user " + str(user_id),
+                        {"account_status": old_status}, {"account_status": new_status},
+                        entity_type="user",
+                    )
+                    return fetch_users(cursor, user_id=user_id, staff_only=False)[0]
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.post("/admin/users/{user_id}/disable")
+def disable_user(user_id: int, request: Request):
+    return change_account_status(request, user_id, True)
+
+
+@app.post("/admin/users/{user_id}/enable")
+def enable_user(user_id: int, request: Request):
+    return change_account_status(request, user_id, False)
+
+
+# ---------- Locations ----------
+
+def clean_country_code(code):
+    # "us" -> "US"; anything that is not 2 letters can never match a country
+    code = code.strip().upper()
+    return code if len(code) == 2 else None
+
+
+@app.get("/locations/countries")
+def get_countries():
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT country_code AS code, country_name AS name, phone_code
+                    FROM countries
+                    WHERE is_shipping_enabled = true
+                    ORDER BY display_order, country_name
+                    """
+                )
+                return cursor.fetchall()
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.get("/locations/countries/{code}/states")
+def get_country_states(code: str):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # The country must be one we ship to
+                cursor.execute(
+                    "SELECT 1 FROM countries WHERE country_code = %s AND is_shipping_enabled = true",
+                    (clean_country_code(code),),
+                )
+                if cursor.fetchone() is None:
+                    raise HTTPException(status_code=404, detail="Country not found")
+
+                cursor.execute(
+                    """
+                    SELECT state_id, state_code, state_name
+                    FROM states
+                    WHERE country_code = %s AND is_active = true
+                    ORDER BY state_name
+                    """,
+                    (clean_country_code(code),),
+                )
+                return cursor.fetchall()
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.get("/locations/states/{state_id}/cities")
+def get_state_cities(state_id: int):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # The state must be active and in a country we ship to
+                cursor.execute(
+                    """
+                    SELECT 1
+                    FROM states s
+                    JOIN countries c ON c.country_code = s.country_code
+                    WHERE s.state_id = %s AND s.is_active = true AND c.is_shipping_enabled = true
+                    """,
+                    (state_id,),
+                )
+                if cursor.fetchone() is None:
+                    raise HTTPException(status_code=404, detail="State not found")
+
+                cursor.execute(
+                    """
+                    SELECT city_id, city_name
+                    FROM cities
+                    WHERE state_id = %s AND is_active = true
+                    ORDER BY lower(city_name), city_id
+                    """,
+                    (state_id,),
+                )
+                return cursor.fetchall()
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+def fetch_country_settings(cursor, country_code=None):
+    # All countries (or one) with the number of active states loaded for them
+    cursor.execute(
+        """
+        SELECT
+            c.country_code AS code,
+            c.country_name AS name,
+            c.phone_code,
+            c.is_shipping_enabled,
+            c.display_order,
+            (SELECT COUNT(*)::int FROM states s WHERE s.country_code = c.country_code AND s.is_active = true) AS states_count
+        FROM countries c
+        WHERE (%s::text IS NULL OR c.country_code = %s)
+        ORDER BY c.display_order, c.country_name
+        """,
+        (country_code, country_code),
+    )
+    return cursor.fetchall()
+
+
+@app.get("/admin/settings/countries")
+def get_country_settings(request: Request):
+    try:
+        require_permission(request, "settings.view")
+
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                return fetch_country_settings(cursor)
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.put("/admin/settings/countries/{code}")
+def set_country_shipping(code: str, body: CountrySettingBody, request: Request):
+    try:
+        admin = require_permission(request, "settings.manage")
+
+        with get_connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # Step 1: the country must exist
+                    country_code = clean_country_code(code)
+                    cursor.execute(
+                        "SELECT is_shipping_enabled FROM countries WHERE country_code = %s FOR UPDATE",
+                        (country_code,),
+                    )
+                    country = cursor.fetchone()
+                    if country is None:
+                        raise HTTPException(status_code=404, detail="Country not found")
+
+                    # Step 2: a country without states cannot take orders
+                    if body.is_shipping_enabled and fetch_country_settings(cursor, country_code)[0]["states_count"] == 0:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Load states and cities for this country first",
+                        )
+
+                    # Step 3: save and write the audit log (entity_id 0, the code is in the data)
+                    cursor.execute(
+                        "UPDATE countries SET is_shipping_enabled = %s WHERE country_code = %s",
+                        (body.is_shipping_enabled, country_code),
+                    )
+                    write_audit(
+                        cursor, request, admin, "country_shipping_changed", 0,
+                        ("Enabled" if body.is_shipping_enabled else "Disabled") + " shipping to " + country_code,
+                        {"country_code": country_code, "is_shipping_enabled": country["is_shipping_enabled"]},
+                        {"country_code": country_code, "is_shipping_enabled": body.is_shipping_enabled},
+                        entity_type="country",
+                    )
+                    return fetch_country_settings(cursor, country_code)[0]
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+def validate_shipping_address(cursor, address):
+    # Checks the address against the location tables and replaces state/city with the proper names
+    country_code = address["country_code"]
+
+    cursor.execute(
+        "SELECT country_name FROM countries WHERE country_code = %s AND is_shipping_enabled = true",
+        (country_code,),
+    )
+    country = cursor.fetchone()
+    if country is None:
+        raise HTTPException(status_code=400, detail="Sorry, we do not ship to that country yet.")
+
+    if not address["phone"].strip():
+        raise HTTPException(status_code=400, detail="Please enter a phone number.")
+
+    # State: matches the state code or the state name, ignoring case
+    cursor.execute(
+        """
+        SELECT state_id, state_name
+        FROM states
+        WHERE country_code = %s AND is_active = true
+          AND (lower(state_code) = lower(%s) OR lower(state_name) = lower(%s))
+        ORDER BY state_id
+        LIMIT 1
+        """,
+        (country_code, address["state_region"].strip(), address["state_region"].strip()),
+    )
+    state = cursor.fetchone()
+    if state is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Please choose a valid state for " + country["country_name"] + ".",
+        )
+
+    # City: must exist in that state, ignoring case
+    cursor.execute(
+        """
+        SELECT city_name
+        FROM cities
+        WHERE state_id = %s AND is_active = true AND lower(city_name) = lower(%s)
+        LIMIT 1
+        """,
+        (state["state_id"], address["city"].strip()),
+    )
+    city = cursor.fetchone()
+    if city is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Please choose a valid city for " + state["state_name"] + ".",
+        )
+
+    # US ZIP code format
+    if country_code == "US" and not re.match(r"^\d{5}(-\d{4})?$", address["postal_code"].strip()):
+        raise HTTPException(status_code=400, detail="Please enter a valid US ZIP code (12345 or 12345-6789).")
+
+    # Save the proper names
+    address["state_region"] = state["state_name"]
+    address["city"] = city["city_name"]
+    address["phone"] = address["phone"].strip()
+    address["postal_code"] = address["postal_code"].strip()
