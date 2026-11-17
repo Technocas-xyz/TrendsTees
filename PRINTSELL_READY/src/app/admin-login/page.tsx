@@ -1,5 +1,3 @@
 import AuthForm from '@/components/AuthForm';
-import {currentUser} from '@/lib/auth';
-import {redirect} from 'next/navigation';
-export const runtime='nodejs';
-export default async function AdminLogin(){const user=await currentUser();if(user?.role==='admin')redirect('/admin');if(user?.role==='customer')redirect('/');return <AuthForm kind='admin'/>;}
+// Staff sign in with the backend; AuthForm checks GET /auth/me (is_staff) after the login
+export default function AdminLogin(){return <AuthForm kind='admin'/>;}

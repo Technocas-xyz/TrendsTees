@@ -243,9 +243,9 @@ export function logoutCustomer() {
   return request<{message:string}>('POST', '/auth/logout', undefined, true);
 }
 
-// The logged-in customer, or null when logged out (401). Other errors (API down) are thrown.
+// The logged-in user (with roles and permissions), or null when logged out (401). Other errors (API down) are thrown.
 export async function getMe() {
-  try { return await request<ApiUser>('GET', '/auth/me', undefined, true); }
+  try { return await request<ApiMe>('GET', '/auth/me', undefined, true); }
   catch (e) { if (e instanceof ApiError && e.status === 401) return null; throw e; }
 }
 
@@ -270,6 +270,99 @@ export function getStates(countryCode:string) {
 // A state can have ~1900 cities
 export function getCities(stateId:number|string) {
   return get<ApiCity[]>('/locations/states/' + encodeURIComponent(String(stateId)) + '/cities');
+}
+
+// ---- Admin panel (all calls send the login cookie; the backend checks the permissions) ----
+export type ApiMe = ApiUser & {
+  is_staff:boolean; is_super_admin:boolean; roles:{role_code:string; role_name:string}[]; permissions:string[];
+};
+
+export type ApiAdminStats = {
+  orders_today:number; orders_total:number; revenue_total:string|number|null;
+  orders_by_status:Record<string,number>; designs_published:number; customers_total:number;
+  recent_orders:{order_public_code:string; placed_at:string; customer:string; order_total:string|number; order_status:string}[];
+};
+export function getAdminStats() {
+  return request<ApiAdminStats>('GET', '/admin/stats', undefined, true);
+}
+
+export type ApiAdminOrderRow = {
+  order_public_code:string; placed_at:string; contact_email:string; customer_name:string|null;
+  item_count:number; order_total:string|number; order_status:string; payment_status:string;
+};
+export function getAdminOrders({status, search, limit = 20, offset = 0}:{status?:string; search?:string; limit?:number; offset?:number} = {}) {
+  const q = new URLSearchParams();
+  if (status) q.set('status', status);
+  if (search) q.set('search', search);
+  q.set('limit', String(limit));
+  q.set('offset', String(offset));
+  return request<{items:ApiAdminOrderRow[]; total:number}>('GET', '/admin/orders?' + q.toString(), undefined, true);
+}
+
+export type ApiAdminOrder = {
+  order_public_code:string; placed_at:string; order_status:string; payment_status:string;
+  item_subtotal:string|number; discount_total:string|number; discount_name:string|null;
+  shipping_total:string|number; tax_total:string|number; order_total:string|number;
+  contact_email:string; customer:{user_id:number; full_name:string; email:string}|null;
+  shipping_address:{recipient_name:string; phone_number:string; line_1:string; line_2:string|null; city:string; state_region:string; postal_code:string; country_code:string}|null;
+  items:{title:string; preview_url:string|null; product_name:string|null; color_name:string|null; size_code:string|null; quantity:number; unit_price:string|number; line_total:string|number; item_status:string}[];
+  payments:{payment_public_code:string; action_type:string; provider_code:string; provider_reference:string|null; currency_code:string; amount:string|number; payment_status:string; reason:string|null; processed_at:string|null}[];
+  status_history:{status_code:string; status_message:string|null; is_customer_visible:boolean; changed_at:string; changed_by_name:string|null}[];
+};
+export function getAdminOrder(code:string) {
+  return request<ApiAdminOrder>('GET', '/admin/orders/' + encodeURIComponent(code), undefined, true);
+}
+export function changeOrderStatus(code:string, body:{new_status:string; message?:string; customer_visible:boolean}) {
+  return request<ApiAdminOrder>('POST', '/admin/orders/' + encodeURIComponent(code) + '/status', body, true);
+}
+export function markOrderPaid(code:string) {
+  return request<ApiAdminOrder>('POST', '/admin/orders/' + encodeURIComponent(code) + '/mark-paid', undefined, true);
+}
+
+export type ApiAdminUser = {
+  user_id:number; full_name:string; email:string; account_status:string; last_login_at:string|null;
+  roles:{role_code:string; role_name:string}[];
+};
+export function getAdminUsers(search = '') {
+  return request<ApiAdminUser[]>('GET', '/admin/users' + (search ? '?search=' + encodeURIComponent(search) : ''), undefined, true);
+}
+export function createAdminUser(body:{full_name:string; email:string; password:string; roles:string[]}) {
+  return request<ApiAdminUser>('POST', '/admin/users', body, true);
+}
+export function setUserRoles(userId:number, roles:string[]) {
+  return request<ApiAdminUser>('PUT', '/admin/users/' + userId + '/roles', {roles}, true);
+}
+export function setUserDisabled(userId:number, disabled:boolean) {
+  return request<ApiAdminUser>('POST', '/admin/users/' + userId + (disabled ? '/disable' : '/enable'), undefined, true);
+}
+
+export type ApiAdminRole = {
+  role_code:string; role_name:string; description:string|null; is_system:boolean; is_staff:boolean;
+  permissions:string[]; user_count:number;
+};
+export type ApiPermissionModule = {module:string; permissions:{permission_code:string; action:string; label:string}[]};
+export function getAdminRoles() {
+  return request<ApiAdminRole[]>('GET', '/admin/roles', undefined, true);
+}
+export function getAdminPermissions() {
+  return request<ApiPermissionModule[]>('GET', '/admin/permissions', undefined, true);
+}
+export function createRole(body:{role_code:string; role_name:string; description:string; permissions:string[]}) {
+  return request<ApiAdminRole>('POST', '/admin/roles', body, true);
+}
+export function updateRole(code:string, body:{role_name:string; description:string; permissions:string[]}) {
+  return request<ApiAdminRole>('PUT', '/admin/roles/' + encodeURIComponent(code), body, true);
+}
+export function deleteRole(code:string) {
+  return request<{message:string}>('DELETE', '/admin/roles/' + encodeURIComponent(code), undefined, true);
+}
+
+export type ApiCountrySetting = {code:string; name:string; phone_code:string; is_shipping_enabled:boolean; display_order:number; states_count:number};
+export function getCountrySettings() {
+  return request<ApiCountrySetting[]>('GET', '/admin/settings/countries', undefined, true);
+}
+export function setCountryShipping(code:string, enabled:boolean) {
+  return request<ApiCountrySetting>('PUT', '/admin/settings/countries/' + encodeURIComponent(code), {is_shipping_enabled: enabled}, true);
 }
 
 // Converts an API design into the Design type the existing JSX uses.
