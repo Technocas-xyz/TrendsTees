@@ -18,7 +18,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StringConstraints
@@ -2036,7 +2036,11 @@ def get_user_permissions(cursor, user_id):
 
 
 def require_permission(request, permission_code):
-    # Not logged in or account not active -> 401; missing permission -> 403.
+    return require_any_permission(request, [permission_code])
+
+
+def require_any_permission(request, permission_codes):
+    # Not logged in or account not active -> 401; none of the permissions -> 403.
     # Returns the user with "permissions", "roles" and "is_super_admin" added.
     user = get_current_user(request)  # only returns users whose account is active
     if user is None:
@@ -2047,7 +2051,7 @@ def require_permission(request, permission_code):
             roles = get_user_roles(cursor, user["user_id"])
             permissions = get_user_permissions(cursor, user["user_id"])
 
-    if permission_code not in permissions:
+    if not any(code in permissions for code in permission_codes):
         raise HTTPException(status_code=403, detail="You don't have permission for this.")
 
     user["permissions"] = permissions
@@ -3337,3 +3341,783 @@ def validate_shipping_address(cursor, address):
     address["city"] = city["city_name"]
     address["phone"] = address["phone"].strip()
     address["postal_code"] = address["postal_code"].strip()
+
+
+# ---------- Admin: design management ----------
+
+MAX_IMAGE_BYTES = 15 * 1024 * 1024
+DESIGN_SORT_STATUSES = ["draft", "published", "hidden", "reported", "removed", "archived"]
+
+# Allowed status moves: current status -> statuses it may move to
+DESIGN_STATUS_MOVES = {
+    "draft": ["published", "archived"],
+    "published": ["hidden", "archived"],
+    "hidden": ["published", "archived"],
+}
+
+
+class DesignPatchBody(BaseModel):
+    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)] | None = None
+    description: str | None = Field(default=None, max_length=2000)  # null clears it
+    category_id: int | None = None
+    tags: list[str] | None = Field(default=None, max_length=100)
+    product_ids: list[int] | None = Field(default=None, max_length=100)
+
+
+class DesignStatusBody(BaseModel):
+    status: Literal["draft", "published", "hidden", "archived"]
+
+
+class BulkDesignStatusBody(BaseModel):
+    codes: list[uuid.UUID] = Field(min_length=1, max_length=100)
+    status: Literal["draft", "published", "hidden", "archived"]
+
+
+def read_image_upload(image):
+    # Reads the upload (never more than the limit + 1 byte) and checks the size
+    data = image.file.read(MAX_IMAGE_BYTES + 1)
+    if not data:
+        raise HTTPException(status_code=400, detail="The image file is empty.")
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail="The image is too large. The maximum size is 15 MB.")
+    return data
+
+
+def detect_image_type(data):
+    # The type comes from the first bytes of the file, never from its name or the browser's content type
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", "png", "transparent"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", "jpg", "light"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp", "webp", "light"
+    raise HTTPException(status_code=400, detail="Only PNG, JPEG or WEBP images are allowed.")
+
+
+def write_image_file(data, ext):
+    # Saves to media/designs/own/<random uuid>.<ext>; the uploaded file name is never used in the path
+    folder = os.path.join(MEDIA_DIR, "designs", "own")
+    os.makedirs(folder, exist_ok=True)
+    name = uuid.uuid4().hex + "." + ext
+    path = os.path.join(folder, name)
+    with open(path, "xb") as f:  # "x" = fail instead of overwriting
+        f.write(data)
+    return path, "designs/own/" + name
+
+
+def safe_original_name(filename, ext):
+    # Only kept as information in the files table
+    name = os.path.basename((filename or "").replace("\\", "/"))
+    name = "".join(ch for ch in name if ch.isprintable()).strip()[:255]
+    return name or "upload." + ext
+
+
+def normalize_tags(items):
+    # Trimmed, lower-cased, no duplicates; at most 15 tags of at most 40 characters
+    tags = []
+    for item in items:
+        tag = " ".join(item.split()).lower()
+        if tag and tag not in tags:
+            tags.append(tag)
+    if len(tags) > 15:
+        raise HTTPException(status_code=400, detail="A design can have at most 15 tags.")
+    for tag in tags:
+        if len(tag) > 40:
+            raise HTTPException(status_code=400, detail="Each tag can have at most 40 characters.")
+    return tags
+
+
+def parse_id_list(text):
+    # "1, 2,3" -> [1, 2, 3]
+    ids = []
+    for part in (text or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit() or len(part) > 12:
+            raise HTTPException(status_code=400, detail="product_ids must be numbers separated by commas.")
+        if int(part) not in ids:
+            ids.append(int(part))
+    return ids
+
+
+def check_active_products(cursor, product_ids):
+    # Every product must exist and be active
+    if product_ids:
+        cursor.execute(
+            "SELECT product_id FROM products WHERE product_id = ANY(%s) AND product_status = 'active'",
+            (product_ids,),
+        )
+        known = {row["product_id"] for row in cursor.fetchall()}
+        unknown = [str(pid) for pid in product_ids if pid not in known]
+        if unknown:
+            raise HTTPException(status_code=400, detail="Unknown or inactive product: " + ", ".join(unknown))
+    return product_ids
+
+
+def all_active_product_ids(cursor):
+    cursor.execute("SELECT product_id FROM products WHERE product_status = 'active' ORDER BY product_id")
+    return [row["product_id"] for row in cursor.fetchall()]
+
+
+def check_category_exists(cursor, category_id):
+    cursor.execute("SELECT 1 FROM categories WHERE category_id = %s", (category_id,))
+    if cursor.fetchone() is None:
+        raise HTTPException(status_code=400, detail="Category not found.")
+
+
+def front_print_area_id(cursor, product_id):
+    # The product's 'front' print area; created when missing (same values as import_teepublic.py)
+    cursor.execute(
+        "SELECT print_area_id FROM product_print_areas WHERE product_id = %s AND area_code = 'front'",
+        (product_id,),
+    )
+    row = cursor.fetchone()
+    if row is not None:
+        return row["print_area_id"]
+    cursor.execute(
+        """
+        INSERT INTO product_print_areas
+            (product_id, area_code, area_name, max_width_in, max_height_in, preview_x_percent, preview_y_percent)
+        VALUES (%s, 'front', 'Front', 12, 16, 50, 40)
+        RETURNING print_area_id
+        """,
+        (product_id,),
+    )
+    return cursor.fetchone()["print_area_id"]
+
+
+def set_design_products(cursor, design_id, product_ids):
+    # Exactly these products are enabled; the others are disabled, never deleted
+    for product_id in product_ids:
+        cursor.execute(
+            """
+            UPDATE design_product_settings
+            SET is_enabled = true, updated_at = now()
+            WHERE design_id = %s AND product_id = %s
+            RETURNING design_product_setting_id
+            """,
+            (design_id, product_id),
+        )
+        if cursor.fetchone() is None:
+            cursor.execute(
+                """
+                INSERT INTO design_product_settings
+                    (design_id, product_id, print_area_id, is_enabled,
+                     placement_x_percent, placement_y_percent, scale_percent, mockup_status)
+                VALUES (%s, %s, %s, true, 50, 40, 80, 'pending')
+                """,
+                (design_id, product_id, front_print_area_id(cursor, product_id)),
+            )
+    cursor.execute(
+        """
+        UPDATE design_product_settings
+        SET is_enabled = false, updated_at = now()
+        WHERE design_id = %s AND is_enabled = true AND NOT (product_id = ANY(%s))
+        """,
+        (design_id, product_ids),
+    )
+
+
+def set_design_tags(cursor, design_id, tag_names):
+    # Exactly these tags are linked; missing tags are created; usage_count is kept up to date
+    wanted_ids = []
+    for name in tag_names:
+        cursor.execute("SELECT tag_id FROM tags WHERE lower(tag_name) = %s", (name,))
+        row = cursor.fetchone()
+        if row is None:
+            cursor.execute("INSERT INTO tags (tag_name) VALUES (%s) RETURNING tag_id", (name,))
+            row = cursor.fetchone()
+        wanted_ids.append(row["tag_id"])
+
+    cursor.execute("SELECT tag_id FROM design_tags WHERE design_id = %s", (design_id,))
+    current_ids = [row["tag_id"] for row in cursor.fetchall()]
+
+    for tag_id in current_ids:
+        if tag_id not in wanted_ids:
+            cursor.execute("DELETE FROM design_tags WHERE design_id = %s AND tag_id = %s", (design_id, tag_id))
+            cursor.execute(
+                "UPDATE tags SET usage_count = GREATEST(usage_count - 1, 0), updated_at = now() WHERE tag_id = %s",
+                (tag_id,),
+            )
+    for tag_id in wanted_ids:
+        if tag_id not in current_ids:
+            cursor.execute(
+                "INSERT INTO design_tags (design_id, tag_id, tag_source) VALUES (%s, %s, 'manual')",
+                (design_id, tag_id),
+            )
+            cursor.execute(
+                "UPDATE tags SET usage_count = usage_count + 1, updated_at = now() WHERE tag_id = %s",
+                (tag_id,),
+            )
+
+
+def lock_design(cursor, code):
+    # The design (not soft-deleted), locked until the transaction ends
+    cursor.execute(
+        """
+        SELECT design_id, public_design_code, title, description, category_id, design_status,
+               artwork_file_id, fingerprint_method, fingerprint_value
+        FROM designs
+        WHERE public_design_code = %s AND deleted_at IS NULL
+        FOR UPDATE
+        """,
+        (code,),
+    )
+    design = cursor.fetchone()
+    if design is None:
+        raise HTTPException(status_code=404, detail="Design not found")
+    return design
+
+
+def check_not_duplicate_image(cursor, digest):
+    cursor.execute("SELECT title FROM designs WHERE fingerprint_value = %s", (digest,))
+    row = cursor.fetchone()
+    if row is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This image is already uploaded as design " + row["title"],
+        )
+
+
+def insert_file_row(cursor, admin, filename, storage_key, mime, size):
+    cursor.execute(
+        """
+        INSERT INTO files (uploaded_by_user_id, file_kind, original_name, storage_key, mime_type, file_size_bytes)
+        VALUES (%s, 'artwork', %s, %s, %s, %s)
+        RETURNING file_id
+        """,
+        (admin["user_id"], safe_original_name(filename, storage_key.rsplit(".", 1)[-1]), storage_key, mime, size),
+    )
+    return cursor.fetchone()["file_id"]
+
+
+def design_snapshot(cursor, design_id):
+    # What the audit log stores about a design's editable data
+    cursor.execute("SELECT title, description, category_id FROM designs WHERE design_id = %s", (design_id,))
+    snapshot = dict(cursor.fetchone())
+    cursor.execute(
+        """
+        SELECT t.tag_name FROM design_tags dt JOIN tags t ON t.tag_id = dt.tag_id
+        WHERE dt.design_id = %s ORDER BY t.tag_name
+        """,
+        (design_id,),
+    )
+    snapshot["tags"] = [row["tag_name"] for row in cursor.fetchall()]
+    cursor.execute(
+        """
+        SELECT s.product_id FROM design_product_settings s
+        JOIN products p ON p.product_id = s.product_id
+        WHERE s.design_id = %s AND s.is_enabled = true AND p.product_status = 'active'
+        ORDER BY s.product_id
+        """,
+        (design_id,),
+    )
+    snapshot["product_ids"] = [row["product_id"] for row in cursor.fetchall()]
+    return snapshot
+
+
+def build_admin_design(cursor, code):
+    cursor.execute(
+        """
+        SELECT
+            d.design_id, d.public_design_code, d.title, d.description, d.content_rating,
+            d.background_type, d.primary_color_hex, d.rights_status, d.design_status,
+            d.source_platform, d.source_reference, d.fingerprint_method, d.fingerprint_value,
+            d.first_published_at, d.last_published_at, d.created_at, d.updated_at,
+            c.category_id, c.category_name, pc.category_id AS parent_id, pc.category_name AS parent_name,
+            pf.storage_key AS preview_key,
+            af.storage_key AS artwork_key, af.mime_type, af.file_size_bytes, af.original_name,
+            u.full_name AS uploaded_by
+        FROM designs d
+        LEFT JOIN categories c ON c.category_id = d.category_id
+        LEFT JOIN categories pc ON pc.category_id = c.parent_category_id
+        LEFT JOIN files pf ON pf.file_id = d.preview_file_id
+        LEFT JOIN files af ON af.file_id = d.artwork_file_id
+        LEFT JOIN app_users u ON u.user_id = d.uploaded_by_user_id
+        WHERE d.public_design_code = %s AND d.deleted_at IS NULL
+        """,
+        (code,),
+    )
+    d = cursor.fetchone()
+    if d is None:
+        raise HTTPException(status_code=404, detail="Design not found")
+
+    cursor.execute(
+        """
+        SELECT t.tag_name FROM design_tags dt JOIN tags t ON t.tag_id = dt.tag_id
+        WHERE dt.design_id = %s ORDER BY t.tag_name
+        """,
+        (d["design_id"],),
+    )
+    tags = [row["tag_name"] for row in cursor.fetchall()]
+
+    # Every active product, with whether it is enabled for this design
+    cursor.execute(
+        """
+        SELECT
+            p.product_id, p.product_name, p.product_type,
+            EXISTS (
+                SELECT 1 FROM design_product_settings s
+                WHERE s.design_id = %s AND s.product_id = p.product_id AND s.is_enabled = true
+            ) AS is_enabled
+        FROM products p
+        WHERE p.product_status = 'active'
+        ORDER BY p.product_id
+        """,
+        (d["design_id"],),
+    )
+    products = cursor.fetchall()
+
+    cursor.execute("SELECT COUNT(*) AS n FROM order_items WHERE design_id = %s", (d["design_id"],))
+    times_ordered = cursor.fetchone()["n"]
+
+    return {
+        "public_design_code": d["public_design_code"],
+        "title": d["title"],
+        "description": d["description"],
+        "content_rating": d["content_rating"],
+        "background_type": d["background_type"],
+        "primary_color_hex": d["primary_color_hex"],
+        "rights_status": d["rights_status"],
+        "design_status": d["design_status"],
+        "source_platform": d["source_platform"],
+        "source_reference": d["source_reference"],
+        "fingerprint_method": d["fingerprint_method"],
+        "fingerprint_value": d["fingerprint_value"],
+        "first_published_at": d["first_published_at"],
+        "last_published_at": d["last_published_at"],
+        "created_at": d["created_at"],
+        "updated_at": d["updated_at"],
+        "preview_url": "/media/" + d["preview_key"] if d["preview_key"] else None,
+        "artwork_url": "/media/" + d["artwork_key"] if d["artwork_key"] else None,
+        "image": {
+            "mime_type": d["mime_type"],
+            "file_size_bytes": d["file_size_bytes"],
+            "original_name": d["original_name"],
+        },
+        "uploaded_by": d["uploaded_by"],
+        "category": {
+            "category_id": d["category_id"],
+            "name": d["category_name"],
+            "parent": (
+                None if d["parent_id"] is None
+                else {"category_id": d["parent_id"], "name": d["parent_name"]}
+            ),
+        },
+        "tags": tags,
+        "products": products,
+        "times_ordered": times_ordered,
+    }
+
+
+def move_design_status(cursor, request, admin, design, new_status):
+    # One status change with its rules and audit row; raises HTTPException when not allowed
+    old_status = design["design_status"]
+    if new_status not in DESIGN_STATUS_MOVES.get(old_status, []):
+        raise HTTPException(status_code=400, detail="Cannot move from " + old_status + " to " + new_status)
+
+    if new_status == "published":
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM design_product_settings s
+            JOIN products p ON p.product_id = s.product_id
+            WHERE s.design_id = %s AND s.is_enabled = true AND p.product_status = 'active'
+            """,
+            (design["design_id"],),
+        )
+        if cursor.fetchone()["n"] == 0:
+            raise HTTPException(status_code=400, detail="Publishing needs at least one enabled product.")
+
+    cursor.execute(
+        """
+        UPDATE designs
+        SET design_status = %s,
+            first_published_at = CASE WHEN %s THEN COALESCE(first_published_at, now()) ELSE first_published_at END,
+            last_published_at = CASE WHEN %s THEN now() ELSE last_published_at END,
+            updated_at = now()
+        WHERE design_id = %s
+        """,
+        (new_status, new_status == "published", new_status == "published", design["design_id"]),
+    )
+    write_audit(
+        cursor, request, admin, "design_status_changed", design["design_id"],
+        "Design " + str(design["public_design_code"]) + " moved from " + old_status + " to " + new_status,
+        {"design_status": old_status}, {"design_status": new_status},
+        entity_type="design",
+    )
+
+
+@app.get("/admin/categories")
+def get_admin_categories(request: Request):
+    try:
+        require_any_permission(request, ["designs.view", "catalog.view"])
+
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # All categories, any status; interests (no parent) with their niches
+                cursor.execute(
+                    """
+                    SELECT category_id, parent_category_id, category_name, category_slug, category_status
+                    FROM categories
+                    ORDER BY display_order, category_name, category_id
+                    """
+                )
+                rows = cursor.fetchall()
+
+                def node(row):
+                    return {
+                        "category_id": row["category_id"],
+                        "name": row["category_name"],
+                        "slug": row["category_slug"],
+                        "status": row["category_status"],
+                    }
+
+                tree = []
+                for row in rows:
+                    if row["parent_category_id"] is None:
+                        item = node(row)
+                        item["niches"] = [
+                            node(child) for child in rows
+                            if child["parent_category_id"] == row["category_id"]
+                        ]
+                        tree.append(item)
+                return tree
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+# Shared by the admin design list and its total (fixed text, values are always %s)
+ADMIN_DESIGNS_FROM_SQL = """
+    FROM designs d
+    LEFT JOIN categories c ON c.category_id = d.category_id
+    LEFT JOIN files f ON f.file_id = d.preview_file_id
+    WHERE d.deleted_at IS NULL
+      AND (%s::text IS NULL OR d.design_status = %s)
+      AND (%s::bigint IS NULL OR d.category_id = %s OR c.parent_category_id = %s)
+      AND (%s::text IS NULL OR d.title ILIKE %s)
+      AND (%s::text IS NULL OR d.source_platform = %s)
+"""
+
+
+@app.get("/admin/designs")
+def get_admin_designs(
+    request: Request,
+    status: Literal["draft", "published", "hidden", "reported", "removed", "archived"] | None = None,
+    category_id: int | None = None,
+    search: str | None = Query(default=None, max_length=100),
+    source: Literal["own", "teepublic_demo"] | None = None,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    pattern = like_pattern(search)
+    filter_params = (status, status, category_id, category_id, category_id, pattern, pattern, source, source)
+
+    try:
+        require_permission(request, "designs.view")
+
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Step 1: one page, newest first
+                cursor.execute(
+                    """
+                    SELECT
+                        d.public_design_code,
+                        d.title,
+                        CASE WHEN f.storage_key IS NULL THEN NULL ELSE '/media/' || f.storage_key END AS preview_url,
+                        c.category_name,
+                        d.design_status,
+                        d.source_platform,
+                        (
+                            SELECT COUNT(*)::int
+                            FROM design_product_settings s
+                            JOIN products p ON p.product_id = s.product_id
+                            WHERE s.design_id = d.design_id AND s.is_enabled = true AND p.product_status = 'active'
+                        ) AS enabled_products,
+                        (SELECT COUNT(*)::int FROM order_items oi WHERE oi.design_id = d.design_id) AS times_ordered,
+                        d.created_at,
+                        d.first_published_at
+                    """
+                    + ADMIN_DESIGNS_FROM_SQL
+                    + """
+                    ORDER BY d.created_at DESC, d.design_id DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    filter_params + (limit, offset),
+                )
+                items = cursor.fetchall()
+
+                # Step 2: total matches, ignoring limit/offset
+                cursor.execute("SELECT COUNT(*) AS total " + ADMIN_DESIGNS_FROM_SQL, filter_params)
+                return {"items": items, "total": cursor.fetchone()["total"]}
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.post("/admin/designs/bulk-status")
+def bulk_design_status(body: BulkDesignStatusBody, request: Request):
+    try:
+        admin = require_permission(request, "designs.manage")
+
+        updated = 0
+        skipped = []
+        with get_connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    for code in dict.fromkeys(body.codes):  # no duplicates, same order
+                        try:
+                            # Each design in its own savepoint: a refused one changes nothing
+                            with conn.transaction():
+                                design = lock_design(cursor, code)
+                                move_design_status(cursor, request, admin, design, body.status)
+                            updated += 1
+                        except HTTPException as e:
+                            skipped.append({"code": str(code), "reason": e.detail})
+        return {"updated": updated, "skipped": skipped}
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.get("/admin/designs/{code}")
+def get_admin_design(code: uuid.UUID, request: Request):
+    try:
+        require_permission(request, "designs.view")
+
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                return build_admin_design(cursor, code)
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.post("/admin/designs")
+def create_design(
+    request: Request,
+    image: UploadFile = File(...),
+    title: str = Form(...),
+    description: str | None = Form(None),
+    category_id: int = Form(...),
+    tags: str | None = Form(None),
+    product_ids: str | None = Form(None),
+    status: Literal["draft", "published"] = Form("draft"),
+):
+    saved_path = None
+    committed = False
+    try:
+        admin = require_permission(request, "designs.manage")
+
+        # Step 1: check everything that does not need the database
+        title = title.strip()
+        if not 1 <= len(title) <= 160:
+            raise HTTPException(status_code=400, detail="The title must be 1 to 160 characters.")
+        description = (description or "").strip() or None
+        if description is not None and len(description) > 2000:
+            raise HTTPException(status_code=400, detail="The description can have at most 2000 characters.")
+        tag_names = normalize_tags((tags or "").split(","))
+        wanted_products = parse_id_list(product_ids)
+
+        data = read_image_upload(image)
+        mime, ext, background = detect_image_type(data)
+        digest = hashlib.sha256(data).hexdigest()
+
+        with get_connection() as conn:
+            # One transaction: everything is saved together or not at all
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    # Step 2: checks that need the database (nothing is saved yet)
+                    check_not_duplicate_image(cursor, digest)
+                    check_category_exists(cursor, category_id)
+                    products = check_active_products(cursor, wanted_products) or all_active_product_ids(cursor)
+                    if status == "published" and not products:
+                        raise HTTPException(status_code=400, detail="Publishing needs at least one enabled product.")
+
+                    # Step 3: save the image file, then the rows
+                    saved_path, storage_key = write_image_file(data, ext)
+                    file_id = insert_file_row(cursor, admin, image.filename, storage_key, mime, len(data))
+                    cursor.execute(
+                        """
+                        INSERT INTO designs
+                            (uploaded_by_user_id, category_id, title, description,
+                             artwork_file_id, preview_file_id, background_type, rights_status,
+                             design_status, first_published_at, last_published_at,
+                             source_platform, fingerprint_method, fingerprint_value)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'original', %s,
+                                CASE WHEN %s THEN now() END, CASE WHEN %s THEN now() END,
+                                'own', 'sha256', %s)
+                        RETURNING design_id, public_design_code
+                        """,
+                        (
+                            admin["user_id"], category_id, title, description,
+                            file_id, file_id, background, status,
+                            status == "published", status == "published", digest,
+                        ),
+                    )
+                    design = cursor.fetchone()
+                    set_design_tags(cursor, design["design_id"], tag_names)
+                    set_design_products(cursor, design["design_id"], products)
+
+                    # Step 4: audit log
+                    write_audit(
+                        cursor, request, admin, "design_created", design["design_id"],
+                        "Created design " + title,
+                        {},
+                        {"title": title, "category_id": category_id, "design_status": status,
+                         "tags": tag_names, "product_ids": products,
+                         "storage_key": storage_key, "sha256": digest},
+                        entity_type="design",
+                    )
+                    result = build_admin_design(cursor, design["public_design_code"])
+        committed = True
+        return result
+
+    except psycopg.errors.UniqueViolation:
+        # Two uploads of the same image at the same moment
+        raise HTTPException(status_code=409, detail="This image is already uploaded.")
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+    finally:
+        # Anything failed after the file was saved: remove the file
+        if saved_path and not committed and os.path.exists(saved_path):
+            os.remove(saved_path)
+
+
+@app.patch("/admin/designs/{code}")
+def update_design(code: uuid.UUID, body: DesignPatchBody, request: Request):
+    # Only what was sent changes (description: null clears it; the other fields ignore null)
+    sent = {k for k in body.model_fields_set if k == "description" or getattr(body, k) is not None}
+    if not sent:
+        raise HTTPException(status_code=400, detail="Send at least one field to change.")
+
+    try:
+        admin = require_permission(request, "designs.manage")
+        tag_names = normalize_tags(body.tags) if "tags" in sent else None
+        description = (body.description or "").strip() or None
+        if description is not None and len(description) > 2000:
+            raise HTTPException(status_code=400, detail="The description can have at most 2000 characters.")
+
+        with get_connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    design = lock_design(cursor, code)
+                    before = design_snapshot(cursor, design["design_id"])
+
+                    if "category_id" in sent:
+                        check_category_exists(cursor, body.category_id)
+                    products = None
+                    if "product_ids" in sent:
+                        products = check_active_products(cursor, list(dict.fromkeys(body.product_ids)))
+                        if design["design_status"] == "published" and not products:
+                            raise HTTPException(
+                                status_code=400,
+                                detail="A published design needs at least one enabled product.",
+                            )
+
+                    # Update only the fields that were sent
+                    cursor.execute(
+                        """
+                        UPDATE designs
+                        SET title = CASE WHEN %s THEN %s ELSE title END,
+                            description = CASE WHEN %s THEN %s ELSE description END,
+                            category_id = CASE WHEN %s THEN %s::bigint ELSE category_id END,
+                            updated_at = now()
+                        WHERE design_id = %s
+                        """,
+                        (
+                            "title" in sent, body.title,
+                            "description" in sent, description,
+                            "category_id" in sent, body.category_id,
+                            design["design_id"],
+                        ),
+                    )
+                    if tag_names is not None:
+                        set_design_tags(cursor, design["design_id"], tag_names)
+                    if products is not None:
+                        set_design_products(cursor, design["design_id"], products)
+
+                    # Audit log: only the fields that changed
+                    after = design_snapshot(cursor, design["design_id"])
+                    changed = [k for k in after if after[k] != before[k]]
+                    write_audit(
+                        cursor, request, admin, "design_updated", design["design_id"],
+                        "Updated design " + str(code),
+                        {k: before[k] for k in changed}, {k: after[k] for k in changed},
+                        entity_type="design",
+                    )
+                    return build_admin_design(cursor, code)
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+
+@app.post("/admin/designs/{code}/image")
+def replace_design_image(code: uuid.UUID, request: Request, image: UploadFile = File(...)):
+    saved_path = None
+    committed = False
+    try:
+        admin = require_permission(request, "designs.manage")
+
+        data = read_image_upload(image)
+        mime, ext, background = detect_image_type(data)
+        digest = hashlib.sha256(data).hexdigest()
+
+        with get_connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    design = lock_design(cursor, code)
+                    check_not_duplicate_image(cursor, digest)
+
+                    # Save the new file and point the design to it; the old file row stays (orders may use it)
+                    saved_path, storage_key = write_image_file(data, ext)
+                    file_id = insert_file_row(cursor, admin, image.filename, storage_key, mime, len(data))
+                    cursor.execute(
+                        """
+                        UPDATE designs
+                        SET artwork_file_id = %s, preview_file_id = %s, background_type = %s,
+                            fingerprint_method = 'sha256', fingerprint_value = %s, updated_at = now()
+                        WHERE design_id = %s
+                        """,
+                        (file_id, file_id, background, digest, design["design_id"]),
+                    )
+                    write_audit(
+                        cursor, request, admin, "design_image_replaced", design["design_id"],
+                        "Replaced the image of design " + str(code),
+                        {"artwork_file_id": design["artwork_file_id"], "sha256": design["fingerprint_value"]},
+                        {"artwork_file_id": file_id, "storage_key": storage_key, "sha256": digest},
+                        entity_type="design",
+                    )
+                    result = build_admin_design(cursor, code)
+        committed = True
+        return result
+
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="This image is already uploaded.")
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
+
+    finally:
+        if saved_path and not committed and os.path.exists(saved_path):
+            os.remove(saved_path)
+
+
+@app.post("/admin/designs/{code}/status")
+def change_design_status(code: uuid.UUID, body: DesignStatusBody, request: Request):
+    try:
+        admin = require_permission(request, "designs.manage")
+
+        with get_connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cursor:
+                    design = lock_design(cursor, code)
+                    move_design_status(cursor, request, admin, design, body.status)
+                    return build_admin_design(cursor, code)
+
+    except psycopg.Error as e:
+        raise db_error_503(e)
