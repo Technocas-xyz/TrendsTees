@@ -1,0 +1,1 @@
+import Link from 'next/link';export default function AccessDenied(){return <main style={{padding:60,textAlign:'center'}}><h1>Access Denied</h1><p>Only authorized administrators can access this page.</p><Link href="/account">Go to account</Link></main>}
