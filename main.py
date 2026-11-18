@@ -3798,6 +3798,7 @@ ADMIN_DESIGNS_FROM_SQL = """
     LEFT JOIN files f ON f.file_id = d.preview_file_id
     WHERE d.deleted_at IS NULL
       AND (%s::text IS NULL OR d.design_status = %s)
+      AND (%s::text IS NOT NULL OR %s::boolean OR d.design_status <> 'archived')
       AND (%s::bigint IS NULL OR d.category_id = %s OR c.parent_category_id = %s)
       AND (%s::text IS NULL OR d.title ILIKE %s)
       AND (%s::text IS NULL OR d.source_platform = %s)
@@ -3811,11 +3812,19 @@ def get_admin_designs(
     category_id: int | None = None,
     search: str | None = Query(default=None, max_length=100),
     source: Literal["own", "teepublic_demo"] | None = None,
+    include_archived: bool = False,
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ):
     pattern = like_pattern(search)
-    filter_params = (status, status, category_id, category_id, category_id, pattern, pattern, source, source)
+    # Without a status filter, archived designs are left out unless include_archived is true
+    filter_params = (
+        status, status,
+        status, include_archived,
+        category_id, category_id, category_id,
+        pattern, pattern,
+        source, source,
+    )
 
     try:
         require_permission(request, "designs.view")
