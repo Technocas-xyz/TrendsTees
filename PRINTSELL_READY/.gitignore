@@ -11,3 +11,5 @@ data/auth.json
 .vercel
 
 next-env.d.ts
+
+env.local
