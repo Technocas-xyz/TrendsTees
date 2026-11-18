@@ -9,7 +9,7 @@ import string
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Annotated, Literal
@@ -25,12 +25,34 @@ from pydantic import BaseModel, Field, StringConstraints
 
 load_dotenv()
 
-app = FastAPI(title="TrendsTees API")
+import logging
+import db_setup
 
-# Allow the Next.js dev server to call this API from the browser
+FRONTEND_ORIGINS = [
+    o.strip()
+    for o in os.getenv("FRONTEND_ORIGINS", "http://localhost:3000").split(",")
+    if o.strip()
+]
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").strip().lower() == "true"
+
+
+@asynccontextmanager
+async def lifespan(app):
+    if os.getenv("AUTO_DB_SETUP", "true").lower() == "true":
+        try:
+            db_setup.run()
+        except Exception:
+            logging.getLogger("uvicorn.error").exception("Database setup failed")
+            raise
+    yield
+
+
+app = FastAPI(title="TrendsTees API", lifespan=lifespan)
+
+# Allow the configured frontend origins to call this API from the browser
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=FRONTEND_ORIGINS,
     allow_credentials=True,  # needed so the browser sends the login cookie
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
@@ -38,6 +60,7 @@ app.add_middleware(
 
 # Serve design images from the media folder next to main.py (works from any start directory)
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "media")
+os.makedirs(MEDIA_DIR, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 
 
@@ -1573,7 +1596,7 @@ def start_session(cursor, request, response, user_id):
         path="/",
         httponly=True,
         samesite="lax",
-        secure=False,  # localhost only; use True behind HTTPS
+        secure=COOKIE_SECURE,
     )
 
 
@@ -1733,7 +1756,7 @@ def logout(request: Request, response: Response):
                         )
 
         # Always remove the cookie and answer 200, even when nobody was logged in
-        response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="lax", secure=False)
+        response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="lax", secure=COOKIE_SECURE)
         return {"message": "Logged out"}
 
     except psycopg.Error as e:
