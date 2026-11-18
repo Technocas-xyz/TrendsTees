@@ -1,0 +1,165 @@
+{
+  "name": "PRINTSELL - Daily Upload Up To 100 Images",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule",
+      "name": "Every Day 9 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "/files/pending/*"
+      },
+      "id": "read",
+      "name": "Read Incoming Images",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        470,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst state = $getWorkflowStaticData('global');\nstate.uploadedFiles ||= {};\nconst allowed = /\\.(png|jpe?g|webp)$/i;\nreturn items.filter(item => {\n const binary = item.binary?.data;\n if (!binary) return false;\n const fileName = binary.fileName || '';\n return allowed.test(fileName) && !state.uploadedFiles[fileName];\n}).sort((a,b) => (a.binary.data.fileName || '').localeCompare(b.binary.data.fileName || '')).slice(0,100).map(item => ({ json: {title: (item.binary.data.fileName||'Artwork').replace(/\\.[^.]+$/,''), category:'New Arrivals', sourceFileName:item.binary.data.fileName}, binary:item.binary}));"
+      },
+      "id": "pick",
+      "name": "Pick Next 100 Unpublished",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.PRINTSELL_UPLOAD_URL}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{'Bearer ' + $env.PRINTSELL_UPLOAD_TOKEN}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "title",
+              "value": "={{$json.title}}"
+            },
+            {
+              "name": "category",
+              "value": "={{$json.category}}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "upload",
+      "name": "Upload Artwork to PRINTSELL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        930,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const state=$getWorkflowStaticData('global');\nstate.uploadedFiles ||= {};\nconst source=$('Pick Next 100 Unpublished').item.json.sourceFileName;\nif($json.ok === true && source) state.uploadedFiles[source]=new Date().toISOString();\nreturn {json:{sourceFileName:source,ok:$json.ok,duplicate:$json.duplicate ?? false}};"
+      },
+      "id": "mark",
+      "name": "Record Successful Upload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1160,
+        320
+      ]
+    }
+  ],
+  "connections": {
+    "Every Day 9 AM": {
+      "main": [
+        [
+          {
+            "node": "Read Incoming Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Incoming Images": {
+      "main": [
+        [
+          {
+            "node": "Pick Next 100 Unpublished",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Next 100 Unpublished": {
+      "main": [
+        [
+          {
+            "node": "Upload Artwork to PRINTSELL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Artwork to PRINTSELL": {
+      "main": [
+        [
+          {
+            "node": "Record Successful Upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Los_Angeles"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}
