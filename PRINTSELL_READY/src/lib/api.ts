@@ -34,8 +34,9 @@ async function request<T>(method:string, path:string, body?:unknown, withCookies
       method,
       cache: 'no-store',
       credentials: withCookies ? 'include' : undefined,
-      headers: body === undefined ? undefined : {'Content-Type': 'application/json'},
-      body: body === undefined ? undefined : JSON.stringify(body),
+      // FormData (file uploads): no Content-Type header, the browser adds it with the multipart boundary
+      headers: body === undefined || body instanceof FormData ? undefined : {'Content-Type': 'application/json'},
+      body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
     });
   } catch {
     throw new ApiError('Cannot reach the store API at ' + API_URL + '. Is the backend running?', 0);
@@ -363,6 +364,70 @@ export function getCountrySettings() {
 }
 export function setCountryShipping(code:string, enabled:boolean) {
   return request<ApiCountrySetting>('PUT', '/admin/settings/countries/' + encodeURIComponent(code), {is_shipping_enabled: enabled}, true);
+}
+
+// ---- Admin: designs ----
+export type ApiAdminCategory = {
+  category_id:number; name:string; slug:string; status:string;
+  niches:{category_id:number; name:string; slug:string; status:string}[];
+};
+export function getAdminCategories() {
+  return request<ApiAdminCategory[]>('GET', '/admin/categories', undefined, true);
+}
+
+// Active products (public endpoint), used for the product checkboxes of a new design
+export function getActiveProducts() {
+  return get<{product_id:number; product_name:string; product_type:string}[]>('/products');
+}
+
+export type ApiAdminDesignRow = {
+  public_design_code:string; title:string; preview_url:string|null; category_name:string|null;
+  design_status:string; source_platform:string; enabled_products:number; times_ordered:number;
+  created_at:string; first_published_at:string|null;
+};
+export function getAdminDesigns({status, categoryId, search, source, limit = 24, offset = 0}:{status?:string; categoryId?:string; search?:string; source?:string; limit?:number; offset?:number} = {}) {
+  const q = new URLSearchParams();
+  if (status) q.set('status', status);
+  if (categoryId) q.set('category_id', categoryId);
+  if (search) q.set('search', search);
+  if (source) q.set('source', source);
+  q.set('limit', String(limit));
+  q.set('offset', String(offset));
+  return request<{items:ApiAdminDesignRow[]; total:number}>('GET', '/admin/designs?' + q.toString(), undefined, true);
+}
+
+export type ApiAdminDesign = {
+  public_design_code:string; title:string; description:string|null; design_status:string;
+  source_platform:string; source_reference:string|null; background_type:string|null;
+  first_published_at:string|null; last_published_at:string|null; created_at:string; updated_at:string;
+  preview_url:string|null; artwork_url:string|null;
+  image:{mime_type:string|null; file_size_bytes:number|null; original_name:string|null};
+  uploaded_by:string|null;
+  category:{category_id:number|null; name:string|null; parent:{category_id:number; name:string}|null};
+  tags:string[];
+  products:{product_id:number; product_name:string; product_type:string; is_enabled:boolean}[];
+  times_ordered:number;
+};
+export function getAdminDesign(code:string) {
+  return request<ApiAdminDesign>('GET', '/admin/designs/' + encodeURIComponent(code), undefined, true);
+}
+// multipart: image, title, description, category_id, tags ("a,b"), product_ids ("1,2"), status (draft|published)
+export function createDesign(form:FormData) {
+  return request<ApiAdminDesign>('POST', '/admin/designs', form, true);
+}
+export function updateDesign(code:string, body:{title?:string; description?:string|null; category_id?:number; tags?:string[]; product_ids?:number[]}) {
+  return request<ApiAdminDesign>('PATCH', '/admin/designs/' + encodeURIComponent(code), body, true);
+}
+export function replaceDesignImage(code:string, file:File) {
+  const form = new FormData();
+  form.append('image', file);
+  return request<ApiAdminDesign>('POST', '/admin/designs/' + encodeURIComponent(code) + '/image', form, true);
+}
+export function setDesignStatus(code:string, status:string) {
+  return request<ApiAdminDesign>('POST', '/admin/designs/' + encodeURIComponent(code) + '/status', {status}, true);
+}
+export function bulkDesignStatus(codes:string[], status:string) {
+  return request<{updated:number; skipped:{code:string; reason:string}[]}>('POST', '/admin/designs/bulk-status', {codes, status}, true);
 }
 
 // Converts an API design into the Design type the existing JSX uses.

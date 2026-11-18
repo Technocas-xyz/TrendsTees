@@ -15,18 +15,18 @@ import {
 
 export const can=(me:ApiMe,permission:string)=>me.permissions.includes(permission);
 const money=(n:string|number)=>'$'+Number(n).toFixed(2);
-const errMsg=(e:unknown)=>e instanceof Error?e.message:String(e);
-const when=(s?:string|null)=>s?new Date(s).toLocaleString():'—';
-const label=(s:string)=>s.replace(/_/g,' ').replace(/^./,c=>c.toUpperCase());
+export const errMsg=(e:unknown)=>e instanceof Error?e.message:String(e);
+export const when=(s?:string|null)=>s?new Date(s).toLocaleString():'—';
+export const label=(s:string)=>s.replace(/_/g,' ').replace(/^./,c=>c.toUpperCase());
 
 // A 401 means the login ended: go back to the admin login
-function sessionEnded(e:unknown){
+export function sessionEnded(e:unknown){
   if(e instanceof ApiError&&e.status===401){window.location.assign('/admin-login');return true}
   return false;
 }
 
 // Loads data when `key` changes; retry() loads it again
-function useLoad<T>(load:()=>Promise<T>,key:string){
+export function useLoad<T>(load:()=>Promise<T>,key:string){
   const [data,setData]=useState<T|null>(null),[error,setError]=useState(''),[tick,setTick]=useState(0);
   useEffect(()=>{
     let live=true;setData(null);setError('');
@@ -35,7 +35,7 @@ function useLoad<T>(load:()=>Promise<T>,key:string){
   },[key,tick]);
   return {data,setData,error,retry:()=>setTick(t=>t+1)};
 }
-function LoadState({error,retry}:{error:string;retry:()=>void}){
+export function LoadState({error,retry}:{error:string;retry:()=>void}){
   return error?<div className="adm-error">{error} <button className="adm-light" onClick={retry}>Retry</button></div>:<p className="adm-muted">Loading…</p>;
 }
 
@@ -54,7 +54,7 @@ function Modal({title,onClose,children}:{title:string;onClose:()=>void;children:
   </div>;
 }
 
-function Thumb({url,title}:{url:string|null;title:string}){
+export function Thumb({url,title}:{url:string|null;title:string}){
   return <div className="adm-thumb">{url?<img src={imageUrl(url)!} alt={title}/>:<Shirt size={20}/>}</div>;
 }
 
