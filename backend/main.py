@@ -323,6 +323,7 @@ DESIGNS_FILTER_SQL = """
 FROM base
 WHERE (%s::numeric IS NULL OR starting_price >= %s::numeric)
   AND (%s::numeric IS NULL OR starting_price <= %s::numeric)
+  AND popularity >= %s
 """
 
 
@@ -333,6 +334,7 @@ def get_designs(
     price_min: float | None = Query(default=None, ge=0),
     price_max: float | None = Query(default=None, ge=0),
     product_type: str | None = Query(default=None, max_length=50),
+    min_orders: int = Query(default=0, ge=0),
     sort: Literal["newest", "price_asc", "price_desc", "popular"] = "newest",
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -350,6 +352,7 @@ def get_designs(
         ptype, ptype,
         price_min, price_min,
         price_max, price_max,
+        min_orders,
     )
 
     try:
