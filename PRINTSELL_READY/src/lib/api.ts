@@ -71,11 +71,13 @@ export function getNiches(slug:string) {
   return get<{interest:ApiInterest; niches:ApiNiche[]}>('/interests/' + encodeURIComponent(slug) + '/niches');
 }
 
-export type DesignParams = {categorySlug?:string; search?:string; priceMin?:string; priceMax?:string; productType?:string; sort?:string; limit?:number; offset?:number};
+// minOrders: only designs ordered at least this many times (used for Bestsellers)
+export type DesignParams = {categorySlug?:string; search?:string; priceMin?:string; priceMax?:string; productType?:string; sort?:string; minOrders?:number; limit?:number; offset?:number};
 
 // One page of designs plus the total number of matches
-export async function getDesignPage({categorySlug, search, priceMin, priceMax, productType, sort, limit = 100, offset = 0}:DesignParams = {}) {
+export async function getDesignPage({categorySlug, search, priceMin, priceMax, productType, sort, minOrders, limit = 100, offset = 0}:DesignParams = {}) {
   const q = new URLSearchParams();
+  if (minOrders) q.set('min_orders', String(minOrders));
   if (categorySlug) q.set('category_slug', categorySlug);
   if (search) q.set('search', search);
   if (priceMin) q.set('price_min', priceMin);
