@@ -1,4 +1,9 @@
 import type { Metadata } from 'next';
+import { Poppins } from 'next/font/google';
 import './globals.css';
-export const metadata: Metadata = {title:'PRINT&SELL | Custom Designs',description:'Print on demand designs and apparel.'};
-export default function RootLayout({children}:{children:React.ReactNode}) {return <html lang="en"><body>{children}</body></html>}
+import '@/components/home/home.css';
+import {STORE_NAME} from '@/lib/config';
+// Poppins is downloaded at build time and served from this site. It sets --font-poppins, which --ps-font (home.css) uses everywhere.
+const poppins = Poppins({subsets:['latin'],weight:['400','500','600','700','800','900'],variable:'--font-poppins',display:'swap'});
+export const metadata: Metadata = {title:STORE_NAME+' | Graphic Tees With Real Style',description:'Original graphic tees, designed in-house and printed just for you.'};
+export default function RootLayout({children}:{children:React.ReactNode}) {return <html lang="en" className={poppins.variable}><body>{children}</body></html>}

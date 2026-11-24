@@ -13,3 +13,6 @@ data/auth.json
 next-env.d.ts
 
 env.local
+
+# Design reference mockups (local only, not part of the site)
+/design-ref/
