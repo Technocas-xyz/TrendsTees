@@ -6,7 +6,9 @@ import {ApiError,getDesignFacets,getDesignPage,getNiches,imageUrl,toDesign} from
 import {ProductCard,ProductCardSkeleton} from '@/components/home/ProductCard';
 import {Newsletter,SectionError} from '@/components/home/HomeSections';
 import {useApi} from '@/components/home/useApi';
-import {CategoryHero,type CategoryImage} from './CategoryHero';
+import Link from 'next/link';
+import {FREE_SHIPPING_LABEL,collectionImage,type Collection} from '@/lib/config';
+import {CategoryHero,CollectionBanner,type CategoryImage} from './CategoryHero';
 import {Filters,type FilterHandlers} from './Filters';
 import {NichePills} from './NichePills';
 import {Pagination} from './Pagination';
@@ -24,8 +26,12 @@ function useIsMobile(){
   return mobile;
 }
 
-// /designs listing. categoryImages = banner images in public/categories (read on the server).
-export function ListingPage({categoryImages,onWish,wishlist}:{categoryImages:CategoryImage[];onWish:(id:string)=>void;wishlist:string[]}){
+// Word used in titles for each product type (?product_type=...)
+const NOUNS:Record<string,string>={hoodie:'Hoodies',sweatshirt:'Sweatshirts',longsleeve:'Long Sleeves'};
+
+// /designs listing, and /collections/<slug> (same page, filtered by the collection from config.ts).
+// categoryImages = banner images in public/categories (read on the server).
+export function ListingPage({categoryImages,collection=null,onWish,wishlist}:{categoryImages:CategoryImage[];collection?:Collection|null;onWish:(id:string)=>void;wishlist:string[]}){
   const params=useSearchParams(),router=useRouter(),pathname=usePathname();
   const query=useMemo(()=>readQuery(params),[params]);
   const mobile=useIsMobile();
@@ -45,7 +51,7 @@ export function ListingPage({categoryImages,onWish,wishlist}:{categoryImages:Cat
   const go=(changes:Record<string,string>,replace=false)=>replace?router.replace(hrefWith(changes),{scroll:false}):router.push(hrefWith(changes),{scroll:false});
   const toResults=()=>results.current?.scrollIntoView({behavior:'smooth',block:'start'});
 
-  const filters=apiFilters(query);
+  const filters=apiFilters(query,collection);
   const pageParams={...filters,sort:query.sort||undefined,limit:PER_PAGE,offset:(query.page-1)*PER_PAGE};
 
   // Interest name, description, cover and niches. An unknown slug (or a niche slug used as category) is not an error.
@@ -59,27 +65,32 @@ export function ListingPage({categoryImages,onWish,wishlist}:{categoryImages:Cat
 
   const interest=info.data?.interest??null;
   const niches=info.data?.niches??[];
-  const hoodies=query.product==='hoodie';
-  const noun=hoodies?'Hoodies':'T-Shirts';
+  const typeNoun=NOUNS[query.product];
+  const noun=typeNoun||'T-Shirts';
   const interestName=interest?.category_name||(query.category?titleCase(query.category):'');
   const nicheName=query.niche?(niches.find(n=>sameText(n.category_slug,query.niche))?.category_name||facets.data?.niches.find(n=>sameText(n.category_slug,query.niche))?.category_name||titleCase(query.niche)):'';
+  // Sale = /designs?sort=price_asc with nothing else chosen. There are no sale prices yet, so it is "lowest price first".
+  const deals=query.sort==='price_asc'&&!query.category&&!query.search&&!query.product&&!collection;
 
-  const heroTitle=query.search?'Search: "'+query.search+'"':interestName?interestName+' '+noun:'All Graphic '+(hoodies?'Hoodies':'Tees');
+  const heroTitle=query.search?'Search: "'+query.search+'"':deals?'Deals':interestName?interestName+' '+noun:'All Graphic '+(typeNoun||'Tees');
   const heroText=query.search
     ?'Original graphic tees matching "'+query.search+'"'+(interestName?' in '+interestName:'')+', designed in-house and printed just for you.'
+    :deals?'Our best-value graphic tees, lowest price first. Free US shipping on orders over '+FREE_SHIPPING_LABEL+'.'
     :interest?.description||'Original graphic tees, designed in-house by the PrintSteez team and printed just for you.';
   // The banner image has its title drawn in (e.g. "Animals T-Shirts"), so it is only used when that title is right:
-  // not for a search ("Search: ...") and not for the hoodie view.
+  // not for a search ("Search: ...") and not for another product type (hoodies, ...).
   const slug=(query.category||'all').toLowerCase();
-  const heroImage=query.search||hoodies?null:categoryImages.find(c=>c.slug===slug)||null;
+  const heroImage=query.search||typeNoun||deals?null:categoryImages.find(c=>c.slug===slug)||null;
   const heroCover=heroImage?null:imageUrl(interest?.cover_url);
 
   const total=list.data?.total??null;
   const pages=total?Math.ceil(total/PER_PAGE):0;
   const what=nicheName||interestName;
-  const heading=total===null?'':query.search&&!what
+  const heading=total===null?'':collection
+    ?total.toLocaleString()+(total===1?' design':' designs')+' in the '+collection.name
+    :query.search&&!what
     ?total.toLocaleString()+(total===1?' result':' results')+' for "'+query.search+'"'
-    :total.toLocaleString()+' '+(what?what+' '+noun:'Graphic '+(hoodies?'Hoodies':'Tees'));
+    :total.toLocaleString()+' '+(what?what+' '+noun:'Graphic '+(typeNoun||'Tees'));
 
   const handlers:FilterHandlers={
     onNiche:slug=>go({niche:slug}),
@@ -94,9 +105,10 @@ export function ListingPage({categoryImages,onWish,wishlist}:{categoryImages:Cat
   return <main className="pl-listing">
     <div className="pl-wrap">
       {/* banner sits in the same centered container as the filters and grid */}
-      <CategoryHero label={hoodies?'GRAPHIC HOODIES':'GRAPHIC TEES'} title={heroTitle} description={heroText} image={heroImage} cover={heroCover} loading={!!query.category&&!query.search&&info.loading&&!info.data}/>
+      {collection?<CollectionBanner name={collection.name} description={collection.description} image={collectionImage(collection)}/>:
+        <CategoryHero label={deals?'SALE':'GRAPHIC '+(typeNoun||'TEES').toUpperCase()} title={heroTitle} description={heroText} image={heroImage} cover={heroCover} loading={!!query.category&&!query.search&&info.loading&&!info.data}/>}
 
-      {interest&&<NichePills interestName={interest.category_name} interestSlug={interest.category_slug} interestCover={interest.cover_url} niches={niches} active={query.niche} href={n=>hrefWith({niche:n})}/>}
+      {interest&&!collection&&<NichePills interestName={interest.category_name} interestSlug={interest.category_slug} interestCover={interest.cover_url} niches={niches} active={query.niche} href={n=>hrefWith({niche:n})}/>}
 
       <div className="pl-layout">
         <Filters facets={facets.data} error={facets.error} retry={facets.retry} query={query} mobile={mobile} open={filtersOpen} onClose={closeFilters} total={total} handlers={handlers}/>
@@ -118,10 +130,18 @@ export function ListingPage({categoryImages,onWish,wishlist}:{categoryImages:Cat
             <div className="pl-grid" aria-busy="true">{Array.from({length:8},(_,i)=><ProductCardSkeleton key={i}/>)}</div>:
             list.data.items.length===0?
             <div className="pl-empty">
-              <h3>{query.page>1&&total?'This page is empty':'No designs match these filters'}</h3>
-              <p>{query.page>1&&total?'There are fewer pages now.':'Try removing a filter.'}</p>
-              {query.page>1&&total?<button type="button" className="ps-btn ps-btn-purple" onClick={()=>go({page:''})}>Go to page 1</button>
-                :active>0&&<button type="button" className="ps-btn ps-btn-purple" onClick={handlers.onClear}>Clear All Filters</button>}
+              {query.page>1&&total?<>
+                <h3>This page is empty</h3><p>There are fewer pages now.</p>
+                <button type="button" className="ps-btn ps-btn-purple" onClick={()=>go({page:''})}>Go to page 1</button>
+              </>:active>0?<>
+                <h3>No designs match these filters</h3><p>Try removing a filter.</p>
+                <button type="button" className="ps-btn ps-btn-purple" onClick={handlers.onClear}>Clear All Filters</button>
+              </>:<>
+                {/* nothing here at all (new collection, empty interest, search without results) */}
+                <h3>{collection?'This collection is getting its first designs':query.search?'No designs found for "'+query.search+'"':'No designs here yet'}</h3>
+                <p>{collection?'Our in-house team is working on new pieces for it. Check back soon.':'Try another search, or browse everything we have.'}</p>
+                <Link className="ps-btn ps-btn-purple" href="/designs">Browse all designs</Link>
+              </>}
             </div>:
             <div className={'pl-grid'+(list.loading?' updating':'')} aria-busy={list.loading}>
               {list.data.items.map((d,i)=><ProductCard key={d.id} design={d} index={i} wished={wishlist.includes(d.id)} onWish={onWish}/>)}

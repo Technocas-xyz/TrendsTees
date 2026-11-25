@@ -75,10 +75,10 @@ export function getNiches(slug:string) {
 
 // minOrders: only designs ordered at least this many times (used for Bestsellers)
 // sizes / colors: designs available in ANY of these size codes / color names (sent comma separated)
-export type DesignParams = {categorySlug?:string; search?:string; priceMin?:string; priceMax?:string; productType?:string; sort?:string; minOrders?:number; sizes?:string[]; colors?:string[]; limit?:number; offset?:number};
+export type DesignParams = {categorySlug?:string; search?:string; priceMin?:string; priceMax?:string; productType?:string; sort?:string; minOrders?:number; sizes?:string[]; colors?:string[]; terms?:string[]; limit?:number; offset?:number};
 
 // Query string for the filters shared by GET /designs and GET /designs/facets
-function designFilterQuery({categorySlug, search, priceMin, priceMax, productType, minOrders, sizes, colors}:DesignParams) {
+function designFilterQuery({categorySlug, search, priceMin, priceMax, productType, minOrders, sizes, colors, terms}:DesignParams) {
   const q = new URLSearchParams();
   if (minOrders) q.set('min_orders', String(minOrders));
   if (categorySlug) q.set('category_slug', categorySlug);
@@ -88,6 +88,7 @@ function designFilterQuery({categorySlug, search, priceMin, priceMax, productTyp
   if (productType) q.set('product_type', productType);
   if (sizes && sizes.length) q.set('sizes', sizes.join(','));
   if (colors && colors.length) q.set('colors', colors.join(','));
+  if (terms && terms.length) q.set('terms', terms.join(','));
   return q;
 }
 

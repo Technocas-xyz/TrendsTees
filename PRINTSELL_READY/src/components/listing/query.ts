@@ -1,5 +1,5 @@
 import type {DesignParams} from '@/lib/api';
-import {SIZES,isHiddenSize} from '@/lib/config';
+import {PRODUCT_TYPES,SIZES,isHiddenSize,type Collection} from '@/lib/config';
 
 // Listing state lives in the URL (refresh, back/forward and shared links keep the filters):
 // /designs?category=animals&niche=cats&search=&sort=&page=2&price_min=&price_max=&sizes=S,M&colors=Black,Navy&product=hoodie
@@ -37,7 +37,8 @@ export function readQuery(q:Params):ListingQuery{
     category:(q.get('category')||'').trim(),
     niche:(q.get('niche')||'').trim(),
     search:(q.get('search')||'').trim().slice(0,100),
-    product:(q.get('product')||'').trim(),
+    // ?product_type=tshirt|hoodie|longsleeve|sweatshirt; the older ?product= links still work
+    product:(q.get('product_type')||q.get('product')||'').trim().toLowerCase(),
     sort:SORTS.some(s=>s[1]===sort)?sort:'',
     page:Math.max(1,parseInt(q.get('page')||'1',10)||1),
     priceMin:price(q.get('price_min')),
@@ -47,9 +48,11 @@ export function readQuery(q:Params):ListingQuery{
   };
 }
 
-// Filters for GET /designs and GET /designs/facets (a chosen niche narrows the interest)
-export function apiFilters(x:ListingQuery):DesignParams{
-  return {categorySlug:x.niche||x.category,search:x.search,productType:x.product,priceMin:x.priceMin,priceMax:x.priceMax,sizes:x.sizes,colors:x.colors};
+// Filters for GET /designs and GET /designs/facets (a chosen niche narrows the interest).
+// A collection page adds its own fixed filters: its words (terms) and/or its interest.
+export function apiFilters(x:ListingQuery,collection?:Collection|null):DesignParams{
+  const productType=PRODUCT_TYPES.find(t=>t.slug===x.product)?.api||x.product;
+  return {categorySlug:x.niche||x.category||collection?.category,search:x.search,productType,priceMin:x.priceMin,priceMax:x.priceMax,sizes:x.sizes,colors:x.colors,terms:collection?.terms};
 }
 
 // Number of sidebar filters in use (badge on the mobile "Filters" button)

@@ -214,6 +214,8 @@ a.ps-type:hover{transform:translateY(-3px);box-shadow:var(--ps-shadow-lg);border
 .ps-news-text h2{margin:0;font-size:25px;font-weight:800;letter-spacing:-.5px;color:#fff}
 .ps-news-text p{margin:4px 0 0;font-size:13px;line-height:1.4;color:var(--ps-purple-soft)}
 .ps-news-form{display:flex;gap:12px;flex:0 1 560px;margin-right:90px}
+.ps-news-col{display:flex;flex-direction:column;flex:1;min-width:0}
+.ps-news-error{margin:6px 0 0;font-size:12px;font-weight:600;color:#FEF3C7}
 .ps-news-field{display:flex;align-items:center;gap:10px;flex:1;min-width:0;height:44px;padding:0 14px;background:#fff;border-radius:6px;color:var(--ps-purple)}
 .ps-news-field input{flex:1;min-width:0;border:0;outline:0;font-family:inherit;font-size:13px;color:var(--ps-text);background:transparent}
 .ps-news-form .ps-btn{height:44px;padding:0 34px;border-radius:6px}

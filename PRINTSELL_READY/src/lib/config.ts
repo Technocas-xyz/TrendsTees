@@ -14,13 +14,52 @@ export const SHOW_PROMO_BANNER = false;
 export const PROMO_CODE = 'STEEZ10';
 export const PROMO_TEXT = 'for 10% Off Your First Order';
 
-// Curated collections: banner image (title and button are drawn in it) + the interest it links to.
-// There is no "nature" interest yet, so Nature points to animals for now.
-export const COLLECTIONS:{name:string;img:string;category:string;alt:string}[] = [
-  {name:'Nature Collection', img:'/collections/nature.png', category:'animals', alt:'Nature Collection: wilderness-inspired graphic tees. Shop Collection'},
-  {name:'Anime Collection', img:'/collections/anime.png', category:'anime', alt:'Anime Collection: iconic styles for anime fans. Shop Collection'},
-  {name:'Retro Collection', img:'/collections/retro.png', category:'vintage', alt:'Retro Collection: vintage vibes, modern tees. Shop Collection'},
+// Curated collections, each at /collections/<slug>. The banner is public/collections/<slug>.png (its title and
+// "Shop Collection" button are drawn in the image). Which designs belong to it:
+//   terms    = designs whose title or one of its tags contains ANY of these words (max 10)
+//   category = designs in this interest (and its niches)
+// With both set, a design must match both. Add a collection here and it appears on the home page, in the
+// header "Collections" menu and at its own URL.
+export type Collection = {slug:string; name:string; alt:string; description:string; terms?:string[]; category?:string};
+export const COLLECTIONS:Collection[] = [
+  {slug:'nature', name:'Nature Collection', alt:'Nature Collection: wilderness-inspired graphic tees. Shop Collection',
+   description:'Forests, mountains and wild animals: original nature graphic tees, designed in-house.',
+   terms:['nature','forest','mountain','animal']},
+  // Anime titles rarely say "anime", so this collection uses the Anime interest instead of words
+  {slug:'anime', name:'Anime Collection', alt:'Anime Collection: iconic styles for anime fans. Shop Collection',
+   description:'Iconic styles for anime fans, designed in-house by the PrintSteez team.',
+   category:'anime'},
+  {slug:'retro', name:'Retro Collection', alt:'Retro Collection: vintage vibes, modern tees. Shop Collection',
+   description:'Vintage vibes on modern tees: retro, 80s and 90s classics.',
+   terms:['retro','vintage','80s','90s','classic']},
 ];
+export const collectionImage = (c:Collection) => '/collections/' + c.slug + '.png';
+export const collectionHref = (c:Collection) => '/collections/' + c.slug;
+export const findCollection = (slug:string) => COLLECTIONS.find(c => c.slug === slug.toLowerCase()) || null;
+
+// Product types: URL value (/designs?product_type=...) -> label and the API product_type. A type appears in
+// menus and links only while it has at least one active product (GET /products).
+// long_sleeve is not an allowed product_type in the database yet, so Long Sleeves stays "Coming soon".
+export const PRODUCT_TYPES:{slug:string; label:string; api:string}[] = [
+  {slug:'tshirt', label:'T-Shirts', api:'tshirt'},
+  {slug:'hoodie', label:'Hoodies', api:'hoodie'},
+  {slug:'longsleeve', label:'Long Sleeves', api:'long_sleeve'},
+  {slug:'sweatshirt', label:'Sweatshirts', api:'sweatshirt'},
+];
+export const productTypeHref = (slug:string) => '/designs?product_type=' + slug;
+
+// Social profiles. An icon is shown only when its URL is filled in (https only); links open in a new tab.
+export const SOCIAL_LINKS:{instagram:string; tiktok:string; youtube:string; x:string; facebook:string} = {
+  instagram: '',
+  tiktok: '',
+  youtube: '',
+  x: '',
+  facebook: '',
+};
+
+// Shipping and returns facts used on the help pages (keep in line with the backend SHIPPING_METHODS)
+export const SHIPS_TO = 'the United States';
+export const RETURN_DAYS = 30;
 
 // Sizes customers can see and choose, in display order. XS is not sold: it never appears in the
 // listing filters, facet counts or product size selectors, even if the API returns it.

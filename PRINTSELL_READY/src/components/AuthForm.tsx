@@ -16,7 +16,7 @@ export default function AuthForm({kind,next='/'}:{kind:'login'|'signup'|'admin';
  const strength=[password.length>=12,/[a-z]/.test(password)&&/[A-Z]/.test(password),/\d/.test(password),/[^\w\s]/.test(password)];
  const strengthCount=strength.filter(Boolean).length;
  const title=kind==='admin'?'Admin sign in':kind==='signup'?'Create your account':'Welcome back';
- const subtitle=kind==='admin'?'Secure workspace for authorized PRINT&SELL team members.':kind==='signup'?'Join PRINT&SELL and keep your favorites and shopping details together.':'Sign in to continue exploring designs you love.';
+ const subtitle=kind==='admin'?'Secure workspace for authorized PrintSteez team members.':kind==='signup'?'Join PrintSteez and keep your favorites and shopping details together.':'Sign in to continue exploring designs you love.';
  async function submit(e:React.FormEvent<HTMLFormElement>){e.preventDefault();if(busy)return;
   setError('');if(isSignup&&password!==confirm){setError('Passwords do not match.');return;}
   if(isSignup&&strengthCount<2){setError('Use a stronger password with 12+ characters and a mix of characters.');return;}
@@ -37,12 +37,12 @@ export default function AuthForm({kind,next='/'}:{kind:'login'|'signup'|'admin';
  }
  return <main className={'auth-shell '+(isAdmin?'auth-admin':'auth-customer')}>
   <section className="auth-intro" aria-label="Account benefits">
-   <Link href="/" className="auth-logo">PRINT<span>&amp;SELL</span></Link>
-   <div className="auth-intro-content"><span className="auth-eyebrow">{isAdmin?'TEAM WORKSPACE':'YOUR PRINT&SELL ACCOUNT'}</span><h2>{isAdmin?'Manage your store with confidence.':'Discover. Customize. Make it yours.'}</h2><p>{isAdmin?'One place for designs, products, orders, customers and store insights.':'Save your favorite designs, revisit your orders, and shop with less effort.'}</p>
+   <Link href="/" className="auth-logo">Print<span>Steez</span></Link>
+   <div className="auth-intro-content"><span className="auth-eyebrow">{isAdmin?'TEAM WORKSPACE':'YOUR PRINTSTEEZ ACCOUNT'}</span><h2>{isAdmin?'Manage your store with confidence.':'Discover. Customize. Make it yours.'}</h2><p>{isAdmin?'One place for designs, products, orders, customers and store insights.':'Save your favorite designs, revisit your orders, and shop with less effort.'}</p>
     <div className="auth-perks"><span><CheckCircle2 size={17}/> {isAdmin?'Role-protected dashboard':'Personal customer dashboard'}</span><span><CheckCircle2 size={17}/> {isAdmin?'Organized management tools':'Favorites and order history'}</span><span><CheckCircle2 size={17}/> {isAdmin?'Accounts are created by a Super Admin':'Quick return to shopping'}</span></div>
    </div><small className="auth-intro-foot">Designed for a simpler shopping experience.</small>
   </section>
-  <section className="auth-side"><div className="auth-card"><div className="auth-mobile-logo"><Link href="/" className="auth-logo">PRINT<span>&amp;SELL</span></Link></div>
+  <section className="auth-side"><div className="auth-card"><div className="auth-mobile-logo"><Link href="/" className="auth-logo">Print<span>Steez</span></Link></div>
    <div className="auth-role-icon">{isAdmin?<ShieldCheck size={23}/>:<UserRound size={23}/>}</div><span className="auth-kicker">{isAdmin?'ADMIN ACCESS':'CUSTOMER ACCESS'}</span><h1>{title}</h1><p className="auth-subtitle">{subtitle}</p>
    <form onSubmit={submit} aria-busy={busy}>
     {isSignup&&<label htmlFor={formId+'-name'}>Full name<input id={formId+'-name'} required minLength={2} maxLength={100} autoComplete="name" value={name} onChange={e=>setName(e.target.value)} placeholder="Your full name" disabled={busy}/></label>}
@@ -53,7 +53,7 @@ export default function AuthForm({kind,next='/'}:{kind:'login'|'signup'|'admin';
     <button className="auth-submit" type="submit" disabled={busy}>{busy?<><LoaderCircle className="auth-spinner" size={18}/> {isSignup?'Creating account...':'Signing in...'}</>:<>{isSignup?'CREATE ACCOUNT':'SIGN IN'} <ArrowRight size={18}/></>}</button>
    </form>
    {!isAdmin&&<div className="auth-links">{isSignup?<>Already have an account? <Link href={'/login'+nextQuery}>Sign in</Link></>:<>New here? <Link href={'/signup'+nextQuery}>Create account</Link></>}</div>}
-   <div className="auth-switch">{isAdmin?<>Shopping as a customer? <Link href="/login">Customer login</Link></>:<>Part of the PRINT&SELL team? <Link href="/admin-login">Admin login</Link></>}</div>
+   <div className="auth-switch">{isAdmin?<>Shopping as a customer? <Link href="/login">Customer login</Link></>:<>Part of the PrintSteez team? <Link href="/admin-login">Admin login</Link></>}</div>
    <Link className="auth-home" href="/">← Return to store</Link>
   </div></section>
  </main>;

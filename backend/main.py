@@ -363,6 +363,16 @@ base AS (
            OR lower(c.category_slug) = lower(%(slug)s)
            OR lower(pc.category_slug) = lower(%(slug)s))
       AND (%(search)s::text IS NULL OR d.title ILIKE %(search)s)
+      -- terms (collections): the title or one of the design's tags contains ANY of the words
+      AND (%(terms)s::text[] IS NULL
+           OR d.title ILIKE ANY(%(terms)s::text[])
+           OR EXISTS (
+                SELECT 1
+                FROM design_tags dt
+                JOIN tags t ON t.tag_id = dt.tag_id
+                WHERE dt.design_id = d.design_id
+                  AND t.tag_name ILIKE ANY(%(terms)s::text[])
+           ))
       AND (%(product_type)s::text IS NULL OR EXISTS (
             -- enabled for an active product of this type
             SELECT 1
@@ -419,9 +429,32 @@ def parse_filter_list(raw: str | None, name: str, max_length: int, upper: bool) 
     return values or None
 
 
-def design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors) -> dict:
+MAX_TERMS = 10
+
+
+def parse_terms(raw: str | None) -> list[str] | None:
+    """Comma separated words -> escaped "%word%" ILIKE patterns (None = no filter). Used by collections."""
+    if not raw:
+        return None
+    patterns: list[str] = []
+    for part in raw.split(","):
+        word = part.strip().lower()
+        if not word:
+            continue
+        if len(word) > 40:
+            raise HTTPException(status_code=422, detail="terms: each word can be at most 40 characters")
+        pattern = like_pattern(word)
+        if pattern not in patterns:
+            patterns.append(pattern)
+    if len(patterns) > MAX_TERMS:
+        raise HTTPException(status_code=422, detail=f"terms: at most {MAX_TERMS} words")
+    return patterns or None
+
+
+def design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors, terms=None) -> dict:
     """Named parameters for DESIGNS_BASE_SQL + DESIGNS_FILTER_SQL. Empty strings mean "no filter"."""
     return {
+        "terms": parse_terms(terms),
         "slug": category_slug or None,
         # ILIKE pattern built here and passed as a parameter
         "search": f"%{search}%" if search else None,
@@ -445,12 +478,13 @@ def get_designs(
     min_orders: int = Query(default=0, ge=0),
     sizes: str | None = Query(default=None, max_length=500, description='Comma separated size codes, e.g. "XS,M"'),
     colors: str | None = Query(default=None, max_length=1000, description='Comma separated color names, e.g. "Black,Navy"'),
+    terms: str | None = Query(default=None, max_length=400, description='Comma separated words; title or a tag contains any of them (collections)'),
     sort: Literal["newest", "price_asc", "price_desc", "popular"] = "newest",
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ):
     # The same filter values are used by the list query and the total query
-    params = design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors)
+    params = design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors, terms)
 
     try:
         with get_connection() as conn:
@@ -529,10 +563,11 @@ def get_design_facets(
     min_orders: int = Query(default=0, ge=0),
     sizes: str | None = Query(default=None, max_length=500),
     colors: str | None = Query(default=None, max_length=1000),
+    terms: str | None = Query(default=None, max_length=400),
 ):
     # Counts for the listing sidebar. Same filters as GET /designs; each facet ignores its own
     # filter and applies all the others, so choosing "M" still shows the counts of the other sizes.
-    params = design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors)
+    params = design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors, terms)
 
     def without(*keys):
         return {**params, **{k: None for k in keys}}

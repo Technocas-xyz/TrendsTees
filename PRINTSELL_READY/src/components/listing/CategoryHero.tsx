@@ -12,6 +12,16 @@ function ImageBanner({title,image}:{title:string;image:CategoryImage}){
   </section>;
 }
 
+// Collection page banner: public/collections/<slug>.png at its own proportions (its title is drawn in, so it is never
+// cropped). These images are about 715px wide, so they are not stretched past ~780px. h1 + description for screen readers/SEO.
+export function CollectionBanner({name,description,image}:{name:string;description:string;image:string}){
+  return <section className="pl-collection-banner" aria-labelledby="pl-hero-title">
+    <h1 id="pl-hero-title" className="ps-sr-only">{name}</h1>
+    <p className="ps-sr-only">{description}</p>
+    <img src={image} alt="" fetchPriority="high"/>
+  </section>;
+}
+
 // Purple category banner rendered in code (no banner image for this category): text on the left,
 // the interest's cover design faded into the purple on the right, plus orange brush strokes.
 export function CategoryHero({label,title,description,image,cover,loading}:{label:string;title:string;description:string;image:CategoryImage|null;cover:string|null;loading?:boolean}){

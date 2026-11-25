@@ -19,6 +19,9 @@
 .pl-hero,.pl-hero-banner{aspect-ratio:var(--pl-hero-ratio);margin-top:20px;border-radius:var(--ps-radius);background:linear-gradient(100deg,#5B21B6 0%,var(--ps-purple) 52%,#7C3AED 100%)}
 .pl-hero-banner{display:block;overflow:hidden;line-height:0}
 .pl-hero-banner img{display:block;width:100%;height:100%;object-fit:cover;object-position:center}
+/* Collection banner: the image's own proportions, centered, never cropped */
+.pl-collection-banner{margin-top:20px;display:flex;justify-content:center}
+.pl-collection-banner img{display:block;width:100%;max-width:780px;height:auto;border-radius:var(--ps-radius)}
 /* Code banner: the box itself does not clip (overflow visible), so with aspect-ratio its height can grow to fit
    the text instead of cutting it off. The artwork layer clips itself to the rounded box. */
 .pl-hero{position:relative;display:flex;align-items:center;color:#fff}
