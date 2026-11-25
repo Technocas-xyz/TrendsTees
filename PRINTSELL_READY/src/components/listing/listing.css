@@ -1,0 +1,205 @@
+/* PrintSteez listing page (/designs). Uses the theme variables from components/home/home.css. */
+:root{--ps-price:#F0531C}
+.pl-listing{font-family:var(--ps-font);color:var(--ps-text)}
+.pl-listing h1,.pl-listing h2,.pl-listing h3{font-family:var(--ps-font-heading)}
+.pl-listing a{text-decoration:none;color:inherit}
+.pl-listing :focus-visible{outline:3px solid var(--ps-orange);outline-offset:2px}
+.pl-wrap{max-width:var(--ps-container);margin:0 auto;padding:0 var(--ps-gutter)}
+.pl-price,.pl-listing .ps-card-price{color:var(--ps-price);font-weight:800}
+.pl-listing .ps-card-price{font-size:14.5px}
+
+/* ---- Category hero ---- */
+/* Both banners sit inside .pl-wrap (same width as filters + grid), rounded, and share one size:
+   4.5:1 from 768px up, 3:1 below. The banner images are 3:1 with their text drawn in.
+   - Image banner, >= 768px: cover + center. That trims 1/6 of the image height at the top and at the bottom;
+     the drawn text sits between 23% and 71% of the height, so it is never cropped.
+   - Image banner, < 768px: contain, so the whole 3:1 image shows (no cropping at all).
+   - Code banner: same ratio, but it grows taller when its text needs more room (see below). */
+:root{--pl-hero-ratio:4.5/1}
+.pl-hero,.pl-hero-banner{aspect-ratio:var(--pl-hero-ratio);margin-top:20px;border-radius:var(--ps-radius);background:linear-gradient(100deg,#5B21B6 0%,var(--ps-purple) 52%,#7C3AED 100%)}
+.pl-hero-banner{display:block;overflow:hidden;line-height:0}
+.pl-hero-banner img{display:block;width:100%;height:100%;object-fit:cover;object-position:center}
+/* Code banner: the box itself does not clip (overflow visible), so with aspect-ratio its height can grow to fit
+   the text instead of cutting it off. The artwork layer clips itself to the rounded box. */
+.pl-hero{position:relative;display:flex;align-items:center;color:#fff}
+.pl-hero-art{position:absolute;inset:0;overflow:hidden;border-radius:inherit;pointer-events:none}
+/* interest cover (a design on a dark background) faded into the purple */
+.pl-hero-cover{position:absolute;top:50%;right:9%;height:150%;aspect-ratio:1;transform:translateY(-50%) rotate(-6deg);object-fit:cover;opacity:.5;mix-blend-mode:screen;-webkit-mask-image:radial-gradient(closest-side,#000 45%,transparent 100%);mask-image:radial-gradient(closest-side,#000 45%,transparent 100%)}
+.pl-hero-brush{position:absolute;top:0;right:0;bottom:0;width:54%;height:100%}
+.pl-hero-inner{position:relative;width:100%;padding:22px 36px}
+.pl-hero-label{margin:0;font-size:12px;font-weight:800;letter-spacing:1.4px;opacity:.92}
+.pl-hero h1{margin:2px 0 6px;max-width:640px;font-size:40px;line-height:1.08;font-weight:800;letter-spacing:-1px;color:#fff}
+.pl-hero-skel{display:block;width:320px;max-width:70%;height:40px;border-radius:8px;background:rgba(255,255,255,.22);animation:ps-pulse 1.4s ease-in-out infinite}
+.pl-hero-text{margin:0;max-width:520px;font-size:14px;line-height:1.5;color:var(--ps-purple-soft)}
+.pl-hero-trust{list-style:none;display:flex;flex-wrap:wrap;align-items:center;gap:6px 0;margin:16px 0 0;padding:0;font-size:12px;font-weight:600}
+.pl-hero-trust li{display:inline-flex;align-items:center;gap:7px}
+.pl-hero-trust li+li::before{content:'|';margin:0 16px;opacity:.6;font-weight:400}
+.pl-hero-trust svg{width:16px;height:16px}
+
+/* ---- Niche pills ---- */
+.pl-pills{display:flex;justify-content:center;gap:12px;margin:18px 0 22px}
+.pl-pill{display:inline-flex;align-items:center;justify-content:center;gap:9px;min-width:150px;height:40px;padding:0 24px;border:1px solid var(--ps-border);border-radius:999px;background:var(--ps-tile);font-size:14px;font-weight:600;color:var(--ps-text);white-space:nowrap;transition:border-color .18s,background .18s}
+.pl-pill svg{color:var(--ps-purple)}
+.pl-pill:has(.pl-pill-img){padding-left:7px}
+/* small round design image (designs sit on a dark background) */
+.pl-pill-img{flex:none;width:28px;height:28px;border-radius:50%;object-fit:cover;background:#111827;box-shadow:0 0 0 2px #fff}
+.pl-pill:hover{border-color:var(--ps-purple)}
+.pl-pill.active{background:var(--ps-purple);border-color:var(--ps-purple);color:#fff;box-shadow:0 4px 12px rgba(109,40,217,.28)}
+.pl-pill.active svg{color:#fff}
+
+/* ---- Layout ---- */
+.pl-layout{display:grid;grid-template-columns:232px minmax(0,1fr);gap:24px;align-items:start;margin-top:22px}
+.pl-pills+.pl-layout{margin-top:0}
+
+/* ---- Filters card ----
+   Desktop: a normal block in the grid (no sticky, no own scrollbar), so the whole page scrolls with the window. */
+.pl-filters{padding:6px 16px 10px;background:#fff;border:1px solid var(--ps-border);border-radius:var(--ps-radius);box-shadow:var(--ps-shadow)}
+.pl-filters-head{display:flex;align-items:center;gap:8px;padding:10px 0 12px}
+.pl-filters-head h2{display:flex;align-items:center;gap:8px;flex:1;margin:0;font-size:16px;font-weight:800}
+.pl-filters-head h2 svg{width:18px;height:18px}
+.pl-clear{border:0;background:none;padding:0;font:inherit;font-size:13px;font-weight:700;color:var(--ps-purple);cursor:pointer}
+.pl-clear:hover{color:var(--ps-purple-hover)}
+.pl-close,.pl-filters-foot{display:none}
+.pl-group{border-top:1px solid #EEF0F3;padding:12px 0}
+.pl-group h3{margin:0}
+.pl-group h3 button{display:flex;align-items:center;justify-content:space-between;width:100%;padding:0;border:0;background:none;font:inherit;font-size:14px;font-weight:800;color:var(--ps-text);cursor:pointer}
+.pl-chevron{width:16px;height:16px;transform:rotate(180deg);transition:transform .18s}
+.pl-group h3 button[aria-expanded="false"] .pl-chevron{transform:none}
+.pl-group-body{margin-top:10px}
+.pl-checks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:7px}
+.pl-checks label{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
+.pl-checks input{width:15px;height:15px;margin:0;accent-color:var(--ps-purple);cursor:pointer}
+.pl-checks small{font-size:12px;color:var(--ps-muted)}
+.pl-checks label.off{opacity:.42;cursor:not-allowed}
+.pl-checks label.off input{cursor:not-allowed}
+.pl-note{margin:0;font-size:12px;line-height:1.4;color:var(--ps-muted)}
+.pl-skel-row{display:block;height:12px;margin:12px 0;border-radius:6px}
+
+/* Price slider: two range inputs on one track */
+.pl-range{position:relative;height:22px;margin:2px 4px 0}
+.pl-range::before{content:'';position:absolute;left:0;right:0;top:50%;height:4px;margin-top:-2px;border-radius:2px;background:#E5E7EB}
+.pl-range-track{position:absolute;top:50%;height:4px;margin-top:-2px;left:var(--lo);right:calc(100% - var(--hi));border-radius:2px;background:var(--ps-purple)}
+.pl-range input{position:absolute;inset:0;width:100%;height:100%;margin:0;background:none;pointer-events:none;-webkit-appearance:none;appearance:none}
+.pl-range input.top{z-index:2}
+.pl-range input::-webkit-slider-runnable-track{background:none;border:0}
+.pl-range input::-moz-range-track{background:none;border:0}
+.pl-range input::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border:3px solid var(--ps-purple);border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(17,24,39,.25);pointer-events:auto;cursor:grab}
+.pl-range input::-moz-range-thumb{width:10px;height:10px;border:3px solid var(--ps-purple);border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(17,24,39,.25);pointer-events:auto;cursor:grab}
+.pl-range input:focus-visible{outline:none}
+.pl-range input:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px rgba(249,115,22,.55)}
+.pl-range input:focus-visible::-moz-range-thumb{box-shadow:0 0 0 4px rgba(249,115,22,.55)}
+.pl-price-values{display:flex;justify-content:space-between;margin-top:6px;font-size:12px;font-weight:600;color:var(--ps-muted)}
+
+/* Color swatches */
+.pl-swatches{list-style:none;margin:0;padding:2px;display:grid;grid-template-columns:repeat(6,24px);gap:10px}
+.pl-swatch{position:relative;display:grid;place-items:center;width:24px;height:24px;padding:0;border:1px solid rgba(17,24,39,.15);border-radius:50%;cursor:pointer}
+.pl-swatch.light{border-color:#C9CDD3}
+.pl-swatch svg{width:14px;height:14px;color:#fff;stroke-width:3}
+.pl-swatch.light svg{color:var(--ps-text)}
+.pl-swatch.on{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--ps-purple)}
+.pl-swatch.off{opacity:.3;cursor:not-allowed}
+.pl-swatch::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);padding:4px 8px;border-radius:6px;background:var(--ps-text);color:#fff;font-size:11px;font-weight:600;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .12s;z-index:3}
+.pl-swatch:hover::after,.pl-swatch:focus-visible::after{opacity:1}
+.pl-more{margin-top:10px;padding:0;border:0;background:none;font:inherit;font-size:12px;font-weight:700;color:var(--ps-purple);cursor:pointer}
+
+/* ---- Results ---- */
+.pl-results{min-width:0;scroll-margin-top:12px}
+.pl-results-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;min-height:36px}
+.pl-results-head h2{margin:0;font-size:18px;font-weight:800;letter-spacing:-.3px}
+.pl-skel-title{display:block;width:220px;height:18px;border-radius:6px}
+.pl-tools{display:flex;align-items:center;gap:10px}
+.pl-sort{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--ps-muted);white-space:nowrap}
+.pl-sort select{height:36px;min-width:170px;padding:0 10px;border:1px solid var(--ps-border);border-radius:8px;background:#fff;font:inherit;font-size:13px;font-weight:600;color:var(--ps-text);cursor:pointer}
+.pl-sort select:focus-visible{outline:3px solid var(--ps-orange);outline-offset:1px}
+.pl-filters-btn{display:none;align-items:center;gap:7px;height:36px;padding:0 12px;border:1px solid var(--ps-border);border-radius:8px;background:#fff;font:inherit;font-size:13px;font-weight:700;color:var(--ps-text);cursor:pointer}
+.pl-filters-btn svg{width:16px;height:16px}
+.pl-count{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--ps-purple);color:#fff;font-size:11px;line-height:18px;text-align:center}
+.pl-grid{display:grid;gap:16px;transition:opacity .15s}
+.pl-grid.updating{opacity:.55}
+.pl-empty{padding:48px 20px;border:1px dashed #D1D5DB;border-radius:var(--ps-radius);text-align:center}
+.pl-empty h3{margin:0 0 6px;font-size:18px}
+.pl-empty p{margin:0 0 16px;font-size:13px;color:var(--ps-muted)}
+
+/* Pagination */
+.pl-pagination{display:flex;justify-content:center;align-items:center;flex-wrap:wrap;gap:6px;margin:26px 0 6px}
+.pl-pagelink{display:grid;place-items:center;min-width:34px;height:34px;padding:0 6px;border:1px solid var(--ps-border);border-radius:8px;background:#fff;font-size:13px;font-weight:700;color:var(--ps-text)}
+a.pl-pagelink:hover{border-color:var(--ps-purple);color:var(--ps-purple)}
+.pl-pagelink.current,.pl-pagelink.current:hover{background:var(--ps-purple);border-color:var(--ps-purple);color:#fff}
+.pl-pagelink.gap{border:0;background:none;min-width:20px;color:var(--ps-muted)}
+.pl-pagelink[aria-disabled="true"]{opacity:.4}
+
+/* ---- Recently viewed ---- */
+.pl-recent{display:grid;grid-template-columns:190px minmax(0,1fr);align-items:center;gap:16px;margin:36px 0 30px;padding:16px 20px;background:var(--ps-tile);border:1px solid #EEF0F3;border-radius:var(--ps-radius)}
+.pl-recent-head h2{margin:0;font-size:20px;font-weight:800;letter-spacing:-.4px}
+.pl-recent-head p{margin:2px 0 0;font-size:13px;color:var(--ps-muted)}
+/* up to 6 small cards in one row (scrolls sideways on narrower screens) */
+.pl-recent-list{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}
+.pl-recent-list>li{min-width:0}
+.pl-recent-item{display:flex;flex-direction:column;height:100%;overflow:hidden;background:#fff;border:1px solid var(--ps-border);border-radius:10px;transition:transform .2s,border-color .18s,box-shadow .18s}
+@media(hover:hover){.pl-recent-item:hover{transform:translateY(-2px);border-color:#DDD6FE;box-shadow:var(--ps-shadow)}}
+.pl-recent-pic{flex:none;display:flex;align-items:center;justify-content:center;width:100%;aspect-ratio:4/3;background:var(--ps-tile);overflow:hidden}
+.pl-recent-text{display:flex;flex-direction:column;gap:3px;min-width:0;padding:8px 10px 10px}
+.pl-recent-text b{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pl-recent-text .pl-price{font-size:13px}
+
+.pl-overlay{position:fixed;inset:0;z-index:90;background:rgba(17,24,39,.45)}
+
+/* ---- Tablet ---- */
+@media(max-width:1180px){
+  .pl-recent{grid-template-columns:1fr}
+  .pl-recent-list{display:flex;overflow-x:auto;padding-bottom:4px;scrollbar-width:thin}
+  .pl-recent-list>li{flex:0 0 160px}
+}
+
+/* ---- Mobile (< 900px): filters slide in from the left ---- */
+@media(max-width:899px){
+  .pl-wrap{padding:0 16px}
+  .pl-hero,.pl-hero-banner{margin-top:16px}
+  .pl-hero-inner{padding:18px 24px}
+  .pl-hero h1{font-size:30px;letter-spacing:-.6px}
+  /* the line wraps on phones, so use spacing instead of "|" (a separator could start the second line) */
+  .pl-hero-trust{gap:6px 16px}
+  .pl-hero-trust li+li::before{content:none}
+  .pl-pills{justify-content:flex-start;overflow-x:auto;margin:14px 0 16px;padding:2px 0 4px;scrollbar-width:none}
+  .pl-pills::-webkit-scrollbar{display:none}
+  .pl-pill{flex:none;min-width:0;padding:0 18px}
+  .pl-layout{grid-template-columns:1fr;margin-top:16px}
+  /* the slide-in panel is a dialog over the page (hidden until opened), so it scrolls on its own */
+  .pl-filters{position:fixed;top:0;left:0;bottom:0;z-index:100;width:min(340px,88vw);overflow-y:auto;overscroll-behavior:contain;border-radius:0 var(--ps-radius) var(--ps-radius) 0;padding:0 16px;transform:translateX(-105%);visibility:hidden;transition:transform .25s ease,visibility 0s linear .25s}
+  .pl-filters.open{transform:none;visibility:visible;transition:transform .25s ease}
+  .pl-filters-head{position:sticky;top:0;z-index:2;background:#fff;padding:14px 0 12px}
+  .pl-close{display:grid;place-items:center;width:32px;height:32px;margin-left:4px;padding:0;border:0;border-radius:8px;background:var(--ps-tile);color:var(--ps-text);cursor:pointer}
+  .pl-filters-foot{display:block;position:sticky;bottom:0;padding:12px 0 16px;background:linear-gradient(transparent,#fff 30%)}
+  .pl-filters-foot .ps-btn{width:100%}
+  .pl-filters-btn{display:inline-flex}
+  .pl-results-head{flex-direction:column;align-items:stretch}
+  .pl-results-head h2{font-size:16px}
+  .pl-tools{justify-content:space-between}
+  .pl-sort select{min-width:0}
+  .pl-grid{gap:10px}
+  .pl-recent{padding:14px}
+  .pl-recent-list{scrollbar-width:none}
+  .pl-recent-list::-webkit-scrollbar{display:none}
+  .pl-recent-list>li{flex:0 0 140px}
+}
+/* ---- Phones (< 768px): banner 3:1, the whole image (no cropping) ---- */
+@media(max-width:767px){
+  :root{--pl-hero-ratio:3/1}
+  .pl-hero-banner img{object-fit:contain}
+  .pl-hero-art{opacity:.55}
+  .pl-hero-inner{padding:14px 16px}
+  .pl-hero-label{font-size:10px}
+  .pl-hero h1{margin:0 0 4px;font-size:22px}
+  .pl-hero-skel{height:24px}
+  .pl-hero-text{font-size:12px;line-height:1.4}
+  .pl-hero-trust{margin-top:8px;gap:4px 12px;font-size:10.5px}
+  .pl-hero-trust svg{width:13px;height:13px}
+}
+@media(prefers-reduced-motion:reduce){.pl-filters,.pl-filters.open,.pl-grid,.pl-chevron{transition:none}.pl-hero-skel{animation:none}}
+
+/* Listing grid columns (mobile first): 2 on phones, 3 from 768px, 4 from 1150px, 5 from 1400px.
+   4 columns start at 1150px (not 1024px) because the 232px filter sidebar would make the cards too narrow. */
+.pl-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(min-width:768px){.pl-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(min-width:1150px){.pl-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(min-width:1400px){.pl-grid{grid-template-columns:repeat(5,minmax(0,1fr))}}

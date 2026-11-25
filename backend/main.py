@@ -219,18 +219,29 @@ def get_interest_niches(category_slug: str):
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                # Step 1: find the active top-level interest by slug (case-insensitive)
+                # Step 1: find the active top-level interest by slug (case-insensitive).
+                # cover_url = preview of the most recently published design in the interest or its niches (as in GET /interests)
                 cursor.execute(
                     """
                     SELECT
-                        category_id,
-                        category_name,
-                        category_slug,
-                        description
-                    FROM categories
-                    WHERE lower(category_slug) = lower(%s)
-                      AND parent_category_id IS NULL
-                      AND category_status = 'active'
+                        c.category_id,
+                        c.category_name,
+                        c.category_slug,
+                        c.description,
+                        (
+                            SELECT '/media/' || f.storage_key
+                            FROM designs d
+                            JOIN categories dc ON dc.category_id = d.category_id
+                            JOIN files f ON f.file_id = d.preview_file_id
+                            WHERE d.design_status = 'published'
+                              AND (dc.category_id = c.category_id OR dc.parent_category_id = c.category_id)
+                            ORDER BY d.first_published_at DESC NULLS LAST, d.design_id DESC
+                            LIMIT 1
+                        ) AS cover_url
+                    FROM categories c
+                    WHERE lower(c.category_slug) = lower(%s)
+                      AND c.parent_category_id IS NULL
+                      AND c.category_status = 'active'
                     """,
                     (category_slug,),
                 )
@@ -240,6 +251,7 @@ def get_interest_niches(category_slug: str):
                     raise HTTPException(status_code=404, detail="Interest not found")
 
                 # Step 2: get the active niches under this interest, each with its number of published designs
+                # and cover_url = preview of its most recently published design (null when it has none)
                 cursor.execute(
                     """
                     SELECT
@@ -252,7 +264,16 @@ def get_interest_niches(category_slug: str):
                             FROM designs d
                             WHERE d.category_id = n.category_id
                               AND d.design_status = 'published'
-                        ) AS count
+                        ) AS count,
+                        (
+                            SELECT '/media/' || f.storage_key
+                            FROM designs d
+                            JOIN files f ON f.file_id = d.preview_file_id
+                            WHERE d.category_id = n.category_id
+                              AND d.design_status = 'published'
+                            ORDER BY d.first_published_at DESC NULLS LAST, d.design_id DESC
+                            LIMIT 1
+                        ) AS cover_url
                     FROM categories n
                     WHERE n.parent_category_id = %s
                       AND n.category_status = 'active'
@@ -459,8 +480,30 @@ def get_designs(
                 )
                 total = cursor.fetchone()["total"]
 
+                # Step 3: colors each design on this page is available in (same "available" rule as the
+                # size/color filters; only the chosen product type when one is set). One query for the whole page;
+                # the unused `base` CTE is not run by PostgreSQL. Color dots and mockups on the cards use this.
+                colors_by_design: dict[int, list] = {row["design_id"]: [] for row in rows}
+                if rows:
+                    cursor.execute(
+                        DESIGNS_BASE_SQL
+                        + """
+                        SELECT design_id, color_name, MAX(color_hex) AS color_hex
+                        FROM available
+                        WHERE design_id = ANY(%(ids)s)
+                          AND color_name IS NOT NULL
+                          AND (%(product_type)s::text IS NULL OR lower(product_type) = lower(%(product_type)s))
+                        GROUP BY design_id, color_name
+                        ORDER BY design_id, color_name
+                        """,
+                        {**params, "ids": list(colors_by_design)},
+                    )
+                    for c in cursor.fetchall():
+                        colors_by_design[c["design_id"]].append({"color_name": c["color_name"], "color_hex": c["color_hex"]})
+
                 # Remove internal fields from the response (only used for filtering and ordering)
                 for row in rows:
+                    row["colors"] = colors_by_design[row["design_id"]]
                     row.pop("design_id")
                     row.pop("category_id")
                     row.pop("popularity")

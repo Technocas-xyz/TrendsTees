@@ -5,12 +5,14 @@ import type {Design} from '@/components/data';
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export type ApiInterest = {category_id:number; category_name:string; category_slug:string; description:string|null; cover_url?:string|null; design_count?:number};
-export type ApiNiche = {category_name:string; category_slug:string};
+// cover_url: preview of the niche's newest design (null when it has none)
+export type ApiNiche = {category_name:string; category_slug:string; count?:number; cover_url?:string|null};
 export type ApiProduct = {product_id:number; product_name:string; product_type:string; starting_price:string|number|null};
 export type ApiDesign = {
   public_design_code:string; title:string; description?:string|null; preview_url:string|null;
   category_name:string|null; category_slug?:string|null;
   starting_price?:string|number|null; // list endpoint
+  colors?:{color_name:string; color_hex:string|null}[]; // list endpoint: colors the design is available in
   products?:ApiProduct[]; // detail endpoint
 };
 
@@ -72,10 +74,11 @@ export function getNiches(slug:string) {
 }
 
 // minOrders: only designs ordered at least this many times (used for Bestsellers)
-export type DesignParams = {categorySlug?:string; search?:string; priceMin?:string; priceMax?:string; productType?:string; sort?:string; minOrders?:number; limit?:number; offset?:number};
+// sizes / colors: designs available in ANY of these size codes / color names (sent comma separated)
+export type DesignParams = {categorySlug?:string; search?:string; priceMin?:string; priceMax?:string; productType?:string; sort?:string; minOrders?:number; sizes?:string[]; colors?:string[]; limit?:number; offset?:number};
 
-// One page of designs plus the total number of matches
-export async function getDesignPage({categorySlug, search, priceMin, priceMax, productType, sort, minOrders, limit = 100, offset = 0}:DesignParams = {}) {
+// Query string for the filters shared by GET /designs and GET /designs/facets
+function designFilterQuery({categorySlug, search, priceMin, priceMax, productType, minOrders, sizes, colors}:DesignParams) {
   const q = new URLSearchParams();
   if (minOrders) q.set('min_orders', String(minOrders));
   if (categorySlug) q.set('category_slug', categorySlug);
@@ -83,10 +86,32 @@ export async function getDesignPage({categorySlug, search, priceMin, priceMax, p
   if (priceMin) q.set('price_min', priceMin);
   if (priceMax) q.set('price_max', priceMax);
   if (productType) q.set('product_type', productType);
+  if (sizes && sizes.length) q.set('sizes', sizes.join(','));
+  if (colors && colors.length) q.set('colors', colors.join(','));
+  return q;
+}
+
+// One page of designs plus the total number of matches
+export async function getDesignPage(params:DesignParams = {}) {
+  const {sort, limit = 100, offset = 0} = params;
+  const q = designFilterQuery(params);
   if (sort) q.set('sort', sort);
   q.set('limit', String(limit));
   q.set('offset', String(offset));
   return get<{items:ApiDesign[]; total:number}>('/designs?' + q.toString());
+}
+
+// GET /designs/facets: counts for the listing sidebar. Each facet ignores its own filter and applies the others.
+// price.min / max are null when nothing matches.
+export type ApiFacets = {
+  niches:{category_id:number; category_name:string; category_slug:string; count:number}[];
+  price:{min:string|number|null; max:string|number|null};
+  sizes:{size_code:string; count:number}[];
+  colors:{color_name:string; color_hex:string|null; count:number}[];
+  total:number;
+};
+export function getDesignFacets(params:DesignParams = {}) {
+  return get<ApiFacets>('/designs/facets?' + designFilterQuery(params).toString());
 }
 
 export async function getDesigns(params:DesignParams = {}) {
@@ -449,5 +474,6 @@ export function toDesign(a:ApiDesign):Design {
     colors: 0,
     image: imageUrl(a.preview_url),
     description: a.description || null,
+    swatches: (a.colors || []).map(c => ({name: c.color_name, hex: c.color_hex})),
   };
 }

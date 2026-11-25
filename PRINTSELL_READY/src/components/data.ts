@@ -1,4 +1,5 @@
-export type Design = {id:string; name:string; price:number; rating:number; reviews:number; category:string; colors:number; image?:string|null; description?:string|null;};
+// swatches: the colors the design is available in (from GET /designs). `colors` is an old count field kept for older pages.
+export type Design = {id:string; name:string; price:number; rating:number; reviews:number; category:string; colors:number; image?:string|null; description?:string|null; swatches?:{name:string;hex:string|null}[];};
 export const designs:Design[]=[
 {id:'1',name:'Dog Mom',price:16.99,rating:4.7,reviews:128,category:'Dogs',colors:5},
 {id:'2',name:'Stay Pawsitive',price:16.99,rating:4.8,reviews:96,category:'Dogs',colors:4},
