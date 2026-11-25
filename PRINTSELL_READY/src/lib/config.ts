@@ -60,6 +60,12 @@ export const SOCIAL_LINKS:{instagram:string; tiktok:string; youtube:string; x:st
 // Shipping and returns facts used on the help pages (keep in line with the backend SHIPPING_METHODS)
 export const SHIPS_TO = 'the United States';
 export const RETURN_DAYS = 30;
+// Printing time before an order ships (products.production_days_min/max in the database: 2-4 tees, 3-5 hoodies)
+export const PRODUCTION_TIME = '2–5 business days';
+
+// Size guide on the design page. Empty = no measurements shown (only fit notes and the available sizes).
+// Fill in with the real measurements of your blank shirts, in inches, e.g. {size:'M', chest:20, length:29}.
+export const SIZE_CHART:{size:string; chest:number; length:number}[] = [];
 
 // Sizes customers can see and choose, in display order. XS is not sold: it never appears in the
 // listing filters, facet counts or product size selectors, even if the API returns it.

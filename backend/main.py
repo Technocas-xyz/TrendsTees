@@ -128,23 +128,30 @@ def get_product_variants(product_id: int):
                 if product is None:
                     raise HTTPException(status_code=404, detail="Product not found")
 
-                # Step 2: get the active variants for this product
+                # Step 2: get the active variants for this product.
+                # in_stock uses the same rule as the listing filters: a variant with inventory_stock rows needs
+                # sum(on_hand - reserved) > 0; a variant without inventory rows is print on demand (always in stock).
                 cursor.execute(
                     """
                     SELECT
-                        product_variant_id,
-                        sku,
-                        color_name,
-                        color_hex,
-                        size_code,
-                        size_name,
-                        customer_price
-                    FROM product_variants
-                    WHERE product_id = %s AND variant_status = 'active'
+                        pv.product_variant_id,
+                        pv.sku,
+                        pv.color_name,
+                        pv.color_hex,
+                        pv.size_code,
+                        pv.size_name,
+                        pv.customer_price,
+                        COALESCE((
+                            SELECT SUM(s.quantity_on_hand - s.quantity_reserved)
+                            FROM inventory_stock s
+                            WHERE s.product_variant_id = pv.product_variant_id
+                        ), 1) > 0 AS in_stock
+                    FROM product_variants pv
+                    WHERE pv.product_id = %s AND pv.variant_status = 'active'
                     ORDER BY
-                        color_name,
-                        array_position(ARRAY['XS','S','M','L','XL','2XL','3XL']::text[], size_code::text),
-                        size_code
+                        pv.color_name,
+                        array_position(ARRAY['XS','S','M','L','XL','2XL','3XL']::text[], pv.size_code::text),
+                        pv.size_code
                     """,
                     (product_id,),
                 )
@@ -1312,6 +1319,45 @@ def calculate_quote(cursor, cart_id, shipping_method_code):
 def get_shipping_methods():
     # Static list for now
     return list(SHIPPING_METHODS.values())
+
+
+@app.get("/cart/{cart_token}/quote")
+def get_cart_quote(cart_token: uuid.UUID, shipping_method_code: Literal["standard", "express"] = "standard"):
+    # Order summary for the cart page: the same calculate_quote() that POST /checkout uses (discounts,
+    # free shipping over the threshold, tax, delivery window), but read-only: nothing is saved and no
+    # address is needed. The final, binding quote is still made by POST /checkout.
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT cart_id FROM carts WHERE guest_cart_token = %s AND cart_status = 'active'",
+                    (cart_token,),
+                )
+                cart = cursor.fetchone()
+                if cart is None:
+                    raise HTTPException(status_code=404, detail="Cart not found")
+
+                quote = calculate_quote(cursor, cart["cart_id"], shipping_method_code)
+                method = SHIPPING_METHODS[shipping_method_code]
+                return {
+                    "shipping_method_code": shipping_method_code,
+                    "free_over": method["free_over"],
+                    "subtotal": quote["subtotal"],
+                    "discount_total": quote["discount_total"],
+                    "discount_name": quote["discount_name"],
+                    "shipping_amount": quote["shipping_amount"],
+                    "tax_total": quote["tax_total"],
+                    "total": quote["total"],
+                    "estimated_delivery_start": quote["estimated_delivery_start"],
+                    "estimated_delivery_end": quote["estimated_delivery_end"],
+                }
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
 
 
 @app.post("/checkout")
