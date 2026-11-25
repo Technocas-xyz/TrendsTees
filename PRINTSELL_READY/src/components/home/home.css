@@ -8,7 +8,9 @@
   /* Poppins comes from next/font in app/layout.tsx (--font-poppins). Every stylesheet uses --ps-font. */
   --ps-font:var(--font-poppins),'Segoe UI',system-ui,-apple-system,Roboto,Arial,sans-serif;
   --ps-font-heading:var(--ps-font);
-  --ps-max:1200px;--ps-gutter:24px;
+  /* One site container: header, nav, banner, listing, newsletter content and footer all use it.
+     Max 1440px wide including the side padding (24px; the mobile rules use 16px). */
+  --ps-container:1440px;--ps-gutter:24px;
 }
 .ps-topbar,.ps-header,.ps-home,.ps-footer{font-family:var(--ps-font);color:var(--ps-text)}
 .ps-home h2,.ps-footer h3,.ps-logo,.ps-hero-heading{font-family:var(--ps-font-heading)}
@@ -28,7 +30,7 @@
 
 /* ---- Top bar ---- */
 .ps-topbar{background:var(--ps-purple);color:#fff}
-.ps-topbar-inner{max-width:calc(var(--ps-max) + 2*var(--ps-gutter));margin:0 auto;padding:0 var(--ps-gutter);min-height:34px;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;font-size:12px;font-weight:600}
+.ps-topbar-inner{max-width:var(--ps-container);margin:0 auto;padding:0 var(--ps-gutter);min-height:34px;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;font-size:12px;font-weight:600}
 .ps-topbar-item{display:inline-flex;align-items:center;white-space:nowrap}
 .ps-topbar-sep{margin:0 16px;opacity:.75;font-weight:400}
 .ps-topbar-icon{display:inline-flex;margin-right:8px}
@@ -37,7 +39,7 @@
 
 /* ---- Header ---- */
 .ps-header{background:#fff;border-bottom:1px solid var(--ps-border);position:relative;z-index:50}
-.ps-header-main{max-width:calc(var(--ps-max) + 2*var(--ps-gutter));margin:0 auto;padding:14px var(--ps-gutter);min-height:76px;display:flex;align-items:center;gap:32px}
+.ps-header-main{max-width:var(--ps-container);margin:0 auto;padding:14px var(--ps-gutter);min-height:76px;display:flex;align-items:center;gap:32px}
 .ps-logo{display:inline-flex;align-items:center;gap:10px;color:#111;white-space:nowrap;line-height:1}
 .ps-logo-mark{font-family:var(--ps-font-heading);font-size:34px;font-weight:900;font-style:italic;letter-spacing:-3px;transform:skewX(-8deg);padding-right:4px}
 .ps-logo-name{font-size:30px;font-weight:800;letter-spacing:-.6px}
@@ -71,7 +73,7 @@
 .ps-burger{display:none;background:none;border:0;color:var(--ps-text);padding:4px;cursor:pointer}
 
 /* Main menu */
-.ps-nav{max-width:calc(var(--ps-max) + 2*var(--ps-gutter));margin:0 auto;padding:0 var(--ps-gutter);height:44px;display:flex;align-items:stretch;justify-content:center;gap:64px;border-top:1px solid var(--ps-border)}
+.ps-nav{max-width:var(--ps-container);margin:0 auto;padding:0 var(--ps-gutter);height:44px;display:flex;align-items:stretch;justify-content:center;gap:64px;border-top:1px solid var(--ps-border)}
 .ps-nav-link{display:inline-flex;align-items:center;gap:5px;height:100%;padding:0 2px;background:none;border:0;border-bottom:2px solid transparent;font-family:inherit;font-size:13.5px;font-weight:600;color:var(--ps-text);cursor:pointer;white-space:nowrap}
 .ps-nav-link:hover{color:var(--ps-purple)}
 .ps-nav-link.purple{color:var(--ps-purple)}
@@ -105,7 +107,7 @@
 .ps-hero-trust li{display:flex;align-items:center;gap:6px}
 
 /* ---- Sections ---- */
-.ps-wrap{max-width:calc(var(--ps-max) + 2*var(--ps-gutter));margin:0 auto;padding:4px var(--ps-gutter) 0}
+.ps-wrap{max-width:var(--ps-container);margin:0 auto;padding:4px var(--ps-gutter) 0}
 .ps-section{margin:26px 0 30px}
 .ps-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:14px}
 .ps-head h2{display:flex;align-items:center;gap:8px;margin:0;font-size:25px;line-height:1.15;font-weight:800;letter-spacing:-.5px;color:var(--ps-text)}
@@ -126,16 +128,24 @@
 /* Product rows + cards */
 .ps-row{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:16px}
 .ps-card{position:relative;min-width:0;background:var(--ps-card);border:1px solid #EEF0F3;border-radius:var(--ps-radius-sm);overflow:hidden;transition:transform .2s,box-shadow .2s}
-.ps-card:hover{transform:translateY(-3px);box-shadow:var(--ps-shadow-lg)}
+@media(hover:hover){
+  .ps-card:hover{transform:translateY(-3px);box-shadow:var(--ps-shadow-lg)}
+  .ps-card.has-alt:hover .ps-tee.alt,.ps-card.has-alt:focus-within .ps-tee.alt{opacity:1}
+  .ps-card.has-alt:hover .ps-tee.main,.ps-card.has-alt:focus-within .ps-tee.main{opacity:0}
+}
 .ps-card-pic{position:relative;aspect-ratio:4/3;background:var(--ps-tile);border-radius:var(--ps-radius-sm) var(--ps-radius-sm) 0 0;overflow:hidden}
-.ps-card-link{display:flex;align-items:center;justify-content:center;width:100%;height:100%}
-/* Blank tee centered at 90% of the image height; design printed on the chest (top 30%, 32% of the tee width).
+.ps-card-link{position:relative;display:flex;align-items:center;justify-content:center;width:100%;height:100%}
+/* Blank tee centered at 90% of the image height; design printed on the chest: about 48% of the shirt width,
+   starting at 28% of its height, scaled to fit (contain) inside a square print area.
    --cx is the chest center: the white tee PNG has ~14px of empty space on its left, so its body sits slightly right of the middle. */
 .ps-tee{position:relative;display:block;height:90%;--cx:50%}
 .ps-tee.black{aspect-ratio:353/390}
 .ps-tee.white{aspect-ratio:324/390;--cx:52%}
 .ps-tee-img{display:block;width:100%;height:100%;object-fit:contain;user-select:none}
-.ps-tee-design{position:absolute;top:30%;left:var(--cx);width:32%;aspect-ratio:1/1.1;transform:translateX(-50%);object-fit:contain;object-position:top center}
+.ps-tee-design{position:absolute;top:28%;left:var(--cx);width:48%;aspect-ratio:1;transform:translateX(-50%);object-fit:contain;object-position:top center}
+/* second color (hover): the other blank tee, stacked on the first and faded in */
+.ps-tee.alt{position:absolute;top:5%;left:50%;transform:translateX(-50%);opacity:0;transition:opacity .25s ease}
+.ps-tee.main{transition:opacity .25s ease}
 .ps-tee-empty{position:absolute;top:36%;left:var(--cx);transform:translateX(-50%);color:#9CA3AF}
 .ps-heart{position:absolute;top:8px;right:8px;width:28px;height:28px;border:0;border-radius:50%;background:#fff;display:grid;place-items:center;box-shadow:0 1px 4px rgba(17,24,39,.18);cursor:pointer;transition:transform .15s}
 .ps-heart:hover{transform:scale(1.1)}
@@ -145,9 +155,15 @@
 .ps-card-info{padding:9px 10px 11px;display:flex;flex-direction:column;gap:4px}
 .ps-card-title{display:block;font-size:13px;font-weight:700;line-height:1.3;color:var(--ps-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ps-card-title:hover{color:var(--ps-purple)}
+/* Stars row always takes its height (empty until a design has reviews), so cards stay the same height */
+.ps-stars-row{min-height:16px;display:flex;align-items:center}
 .ps-stars{display:flex;align-items:center;gap:1px}
 .ps-stars span{margin-left:4px;font-size:11px;color:var(--ps-muted)}
 .ps-card-price{margin:0;font-size:13px;font-weight:800;line-height:1.3;color:var(--ps-text)}
+/* Available color dots (max 5) */
+.ps-dots{display:flex;align-items:center;gap:5px;min-height:14px;margin-top:2px}
+.ps-dot{width:12px;height:12px;border-radius:50%;box-shadow:inset 0 0 0 1px rgba(17,24,39,.22)}
+.ps-dots-more{font-size:11px;font-weight:600;color:var(--ps-muted)}
 
 /* Skeletons */
 @keyframes ps-pulse{0%,100%{opacity:1}50%{opacity:.55}}
@@ -192,7 +208,7 @@ a.ps-type:hover{transform:translateY(-3px);box-shadow:var(--ps-shadow-lg);border
 /* Newsletter */
 .ps-news{position:relative;overflow:hidden;background:var(--ps-purple);color:#fff}
 .ps-news-brush{position:absolute;top:0;right:0;width:260px;height:100%;pointer-events:none}
-.ps-news-inner{position:relative;max-width:calc(var(--ps-max) + 2*var(--ps-gutter));margin:0 auto;padding:22px var(--ps-gutter);min-height:92px;display:flex;align-items:center;gap:26px}
+.ps-news-inner{position:relative;max-width:var(--ps-container);margin:0 auto;padding:22px var(--ps-gutter);min-height:92px;display:flex;align-items:center;gap:26px}
 .ps-news-icon{flex:none;color:#fff;margin-left:20px}
 .ps-news-text{flex:1;min-width:0}
 .ps-news-text h2{margin:0;font-size:25px;font-weight:800;letter-spacing:-.5px;color:#fff}
@@ -205,7 +221,7 @@ a.ps-type:hover{transform:translateY(-3px);box-shadow:var(--ps-shadow-lg);border
 
 /* ---- Footer (overrides any global `footer` rules) ---- */
 footer.ps-footer{display:block;background:var(--ps-navy);color:#E5E7EB;padding:0}
-.ps-footer .ps-footer-inner{max-width:calc(var(--ps-max) + 2*var(--ps-gutter));margin:0 auto;padding:30px var(--ps-gutter) 22px;display:grid;grid-template-columns:1.9fr repeat(4,1fr);gap:28px}
+.ps-footer .ps-footer-inner{max-width:var(--ps-container);margin:0 auto;padding:30px var(--ps-gutter) 22px;display:grid;grid-template-columns:1.9fr repeat(4,1fr);gap:28px}
 .ps-footer .ps-footer-brand{display:flex;flex-direction:column;gap:12px;align-items:flex-start}
 .ps-footer .ps-logo-mark{font-size:30px}
 .ps-footer .ps-logo-name{font-size:26px}
@@ -217,7 +233,7 @@ footer.ps-footer{display:block;background:var(--ps-navy);color:#E5E7EB;padding:0
 .ps-footer h3{margin:0 0 4px;font-size:13px;font-weight:800;color:#fff}
 .ps-footer .ps-footer-col a{font-size:12.5px;line-height:1.5;color:#9CA3AF}
 .ps-footer .ps-footer-col a:hover{color:#fff}
-.ps-footer .ps-footer-bottom{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;max-width:calc(var(--ps-max) + 2*var(--ps-gutter));margin:0 auto;padding:14px var(--ps-gutter);border-top:1px solid rgba(255,255,255,.12);font-size:12px;color:#9CA3AF}
+.ps-footer .ps-footer-bottom{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;max-width:var(--ps-container);margin:0 auto;padding:14px var(--ps-gutter);border-top:1px solid rgba(255,255,255,.12);font-size:12px;color:#9CA3AF}
 .ps-policies{display:flex;align-items:center;margin-left:auto}
 .ps-policies a{color:#9CA3AF}
 .ps-policies a:hover{color:#fff}
@@ -249,7 +265,8 @@ footer.ps-footer{display:block;background:var(--ps-navy);color:#E5E7EB;padding:0
   .ps-topbar-inner{padding:6px 12px;row-gap:4px}
   .ps-header-main{flex-wrap:wrap;gap:12px 14px;padding:12px 16px;min-height:0}
   .ps-burger{display:block;order:1}
-  .ps-logo{order:2}
+  /* header only: the footer logo must stay first in its column */
+  .ps-header-main .ps-logo{order:2}
   .ps-logo-mark{font-size:26px}
   .ps-logo-name{font-size:22px}
   .ps-actions{order:3;gap:18px;margin-left:auto}

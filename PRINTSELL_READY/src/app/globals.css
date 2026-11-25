@@ -16,3 +16,5 @@
 .phone-field span{display:flex;align-items:center;padding:0 12px;border:1px solid #dfe1e7;border-right:0;border-radius:7px 0 0 7px;background:#f4f5f7;font-weight:600}
 .phone-field input{flex:1;min-width:0;border-radius:0 7px 7px 0}
 .phone-field input:only-child{border-radius:7px}
+/* Same site container as the PrintSteez header/footer (1440px incl. 24px sides) from 900px up; smaller screens unchanged */
+@media(min-width:900px){.container{width:min(1392px,calc(100% - 48px))}}

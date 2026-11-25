@@ -219,18 +219,29 @@ def get_interest_niches(category_slug: str):
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                # Step 1: find the active top-level interest by slug (case-insensitive)
+                # Step 1: find the active top-level interest by slug (case-insensitive).
+                # cover_url = preview of the most recently published design in the interest or its niches (as in GET /interests)
                 cursor.execute(
                     """
                     SELECT
-                        category_id,
-                        category_name,
-                        category_slug,
-                        description
-                    FROM categories
-                    WHERE lower(category_slug) = lower(%s)
-                      AND parent_category_id IS NULL
-                      AND category_status = 'active'
+                        c.category_id,
+                        c.category_name,
+                        c.category_slug,
+                        c.description,
+                        (
+                            SELECT '/media/' || f.storage_key
+                            FROM designs d
+                            JOIN categories dc ON dc.category_id = d.category_id
+                            JOIN files f ON f.file_id = d.preview_file_id
+                            WHERE d.design_status = 'published'
+                              AND (dc.category_id = c.category_id OR dc.parent_category_id = c.category_id)
+                            ORDER BY d.first_published_at DESC NULLS LAST, d.design_id DESC
+                            LIMIT 1
+                        ) AS cover_url
+                    FROM categories c
+                    WHERE lower(c.category_slug) = lower(%s)
+                      AND c.parent_category_id IS NULL
+                      AND c.category_status = 'active'
                     """,
                     (category_slug,),
                 )
@@ -239,18 +250,34 @@ def get_interest_niches(category_slug: str):
                 if interest is None:
                     raise HTTPException(status_code=404, detail="Interest not found")
 
-                # Step 2: get the active niches under this interest
+                # Step 2: get the active niches under this interest, each with its number of published designs
+                # and cover_url = preview of its most recently published design (null when it has none)
                 cursor.execute(
                     """
                     SELECT
-                        category_id,
-                        category_name,
-                        category_slug,
-                        description
-                    FROM categories
-                    WHERE parent_category_id = %s
-                      AND category_status = 'active'
-                    ORDER BY display_order, category_name
+                        n.category_id,
+                        n.category_name,
+                        n.category_slug,
+                        n.description,
+                        (
+                            SELECT COUNT(*)
+                            FROM designs d
+                            WHERE d.category_id = n.category_id
+                              AND d.design_status = 'published'
+                        ) AS count,
+                        (
+                            SELECT '/media/' || f.storage_key
+                            FROM designs d
+                            JOIN files f ON f.file_id = d.preview_file_id
+                            WHERE d.category_id = n.category_id
+                              AND d.design_status = 'published'
+                            ORDER BY d.first_published_at DESC NULLS LAST, d.design_id DESC
+                            LIMIT 1
+                        ) AS cover_url
+                    FROM categories n
+                    WHERE n.parent_category_id = %s
+                      AND n.category_status = 'active'
+                    ORDER BY n.display_order, n.category_name
                     """,
                     (interest["category_id"],),
                 )
@@ -267,11 +294,41 @@ def get_interest_niches(category_slug: str):
         )
 
 
-# Shared SQL for GET /designs (fixed text, no user input is ever added to it).
-# base = published designs matching category, search and product type, with
-# starting_price and popularity calculated once per design.
+# Sizes in display order; any other size code is listed after these, alphabetically
+SIZE_ORDER = ["XS", "S", "M", "L", "XL", "2XL", "3XL"]
+# Most values accepted in one sizes / colors filter
+MAX_FILTER_VALUES = 20
+
+# Shared SQL for GET /designs and GET /designs/facets. The text is fixed: user values are only
+# ever passed as %(name)s parameters. A filter whose parameter is None (NULL) is switched off,
+# which is how each facet ignores its own filter.
+#
+# available = what a design can be bought in: enabled for an active product, active variant, and
+#   not out of stock. A variant with inventory_stock rows needs sum(on_hand - reserved) > 0;
+#   a variant with no inventory rows is print on demand, so it is always available.
+# base = published designs matching category, search and product type, with starting_price
+#   and popularity calculated once per design.
 DESIGNS_BASE_SQL = """
-WITH base AS (
+WITH available AS (
+    SELECT DISTINCT
+        dps.design_id,
+        p.product_type::text AS product_type,
+        pv.size_code,
+        pv.color_name,
+        pv.color_hex
+    FROM design_product_settings dps
+    JOIN products p ON p.product_id = dps.product_id
+    JOIN product_variants pv ON pv.product_id = p.product_id
+    WHERE dps.is_enabled = true
+      AND p.product_status = 'active'
+      AND pv.variant_status = 'active'
+      AND COALESCE((
+            SELECT SUM(s.quantity_on_hand - s.quantity_reserved)
+            FROM inventory_stock s
+            WHERE s.product_variant_id = pv.product_variant_id
+          ), 1) > 0
+),
+base AS (
     SELECT
         d.design_id,
         d.public_design_code,
@@ -279,6 +336,7 @@ WITH base AS (
         d.preview_file_id,
         CASE WHEN f.storage_key IS NULL THEN NULL
              ELSE '/media/' || f.storage_key END AS preview_url,
+        d.category_id,
         c.category_name,
         d.first_published_at,
         (
@@ -301,11 +359,11 @@ WITH base AS (
     LEFT JOIN categories c ON c.category_id = d.category_id
     LEFT JOIN categories pc ON pc.category_id = c.parent_category_id
     WHERE d.design_status = 'published'
-      AND (%s::text IS NULL
-           OR lower(c.category_slug) = lower(%s)
-           OR lower(pc.category_slug) = lower(%s))
-      AND (%s::text IS NULL OR d.title ILIKE %s)
-      AND (%s::text IS NULL OR EXISTS (
+      AND (%(slug)s::text IS NULL
+           OR lower(c.category_slug) = lower(%(slug)s)
+           OR lower(pc.category_slug) = lower(%(slug)s))
+      AND (%(search)s::text IS NULL OR d.title ILIKE %(search)s)
+      AND (%(product_type)s::text IS NULL OR EXISTS (
             -- enabled for an active product of this type
             SELECT 1
             FROM design_product_settings dps2
@@ -313,18 +371,68 @@ WITH base AS (
             WHERE dps2.design_id = d.design_id
               AND dps2.is_enabled = true
               AND p2.product_status = 'active'
-              AND lower(p2.product_type::text) = lower(%s)
+              AND lower(p2.product_type::text) = lower(%(product_type)s)
           ))
 )
 """
 
-# Price filter on the calculated starting_price (applied to the base CTE)
+# Filters applied to the base CTE: price (on starting_price), minimum orders, and size / color
+# availability. With sizes and colors both given, ONE available variant must have a chosen size
+# AND a chosen color. With a product type, that variant must also be of that product type.
 DESIGNS_FILTER_SQL = """
 FROM base
-WHERE (%s::numeric IS NULL OR starting_price >= %s::numeric)
-  AND (%s::numeric IS NULL OR starting_price <= %s::numeric)
-  AND popularity >= %s
+WHERE (%(price_min)s::numeric IS NULL OR starting_price >= %(price_min)s::numeric)
+  AND (%(price_max)s::numeric IS NULL OR starting_price <= %(price_max)s::numeric)
+  AND popularity >= %(min_orders)s
+  AND ((%(sizes)s::text[] IS NULL AND %(colors)s::text[] IS NULL) OR EXISTS (
+        SELECT 1
+        FROM available a
+        WHERE a.design_id = base.design_id
+          AND (%(sizes)s::text[] IS NULL OR upper(a.size_code) = ANY(%(sizes)s::text[]))
+          AND (%(colors)s::text[] IS NULL OR lower(a.color_name) = ANY(%(colors)s::text[]))
+          AND (%(product_type)s::text IS NULL OR lower(a.product_type) = lower(%(product_type)s))
+      ))
 """
+
+
+def parse_filter_list(raw: str | None, name: str, max_length: int, upper: bool) -> list[str] | None:
+    """Comma separated filter values -> clean list, or None when there is nothing to filter on.
+
+    "xs, M,,m" -> ["XS", "M"] for sizes (upper=True). Colors are lower-cased (upper=False).
+    Values are trimmed, empty items dropped and duplicates removed; the SQL compares
+    case-insensitively, so the case used here only has to match the SQL side.
+    """
+    if not raw:
+        return None
+    values: list[str] = []
+    for part in raw.split(","):
+        value = part.strip()
+        if not value:
+            continue
+        if len(value) > max_length:
+            raise HTTPException(status_code=422, detail=f"{name}: each value can be at most {max_length} characters")
+        value = value.upper() if upper else value.lower()
+        if value not in values:
+            values.append(value)
+    if len(values) > MAX_FILTER_VALUES:
+        raise HTTPException(status_code=422, detail=f"{name}: at most {MAX_FILTER_VALUES} values")
+    return values or None
+
+
+def design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors) -> dict:
+    """Named parameters for DESIGNS_BASE_SQL + DESIGNS_FILTER_SQL. Empty strings mean "no filter"."""
+    return {
+        "slug": category_slug or None,
+        # ILIKE pattern built here and passed as a parameter
+        "search": f"%{search}%" if search else None,
+        "product_type": product_type or None,
+        "price_min": price_min,
+        "price_max": price_max,
+        "min_orders": min_orders,
+        # size_code is varchar(30), color_name varchar(80)
+        "sizes": parse_filter_list(sizes, "sizes", 30, upper=True),
+        "colors": parse_filter_list(colors, "colors", 80, upper=False),
+    }
 
 
 @app.get("/designs")
@@ -335,25 +443,14 @@ def get_designs(
     price_max: float | None = Query(default=None, ge=0),
     product_type: str | None = Query(default=None, max_length=50),
     min_orders: int = Query(default=0, ge=0),
+    sizes: str | None = Query(default=None, max_length=500, description='Comma separated size codes, e.g. "XS,M"'),
+    colors: str | None = Query(default=None, max_length=1000, description='Comma separated color names, e.g. "Black,Navy"'),
     sort: Literal["newest", "price_asc", "price_desc", "popular"] = "newest",
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ):
-    # Build the ILIKE pattern in Python and pass it as a parameter (None = no search)
-    search_pattern = f"%{search}%" if search else None
-    # Treat empty strings as "no filter"
-    slug = category_slug if category_slug else None
-    ptype = product_type if product_type else None
-
-    # Same filter values are used by the list query and the total query
-    filter_params = (
-        slug, slug, slug,
-        search_pattern, search_pattern,
-        ptype, ptype,
-        price_min, price_min,
-        price_max, price_max,
-        min_orders,
-    )
+    # The same filter values are used by the list query and the total query
+    params = design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors)
 
     try:
         with get_connection() as conn:
@@ -365,30 +462,181 @@ def get_designs(
                     + DESIGNS_FILTER_SQL
                     + """
                     ORDER BY
-                        CASE WHEN %s = 'price_asc' THEN starting_price END ASC NULLS LAST,
-                        CASE WHEN %s = 'price_desc' THEN starting_price END DESC NULLS LAST,
-                        CASE WHEN %s = 'popular' THEN popularity END DESC,
-                        CASE WHEN %s IN ('newest', 'popular') THEN first_published_at END DESC NULLS LAST,
+                        CASE WHEN %(sort)s = 'price_asc' THEN starting_price END ASC NULLS LAST,
+                        CASE WHEN %(sort)s = 'price_desc' THEN starting_price END DESC NULLS LAST,
+                        CASE WHEN %(sort)s = 'popular' THEN popularity END DESC,
+                        CASE WHEN %(sort)s IN ('newest', 'popular') THEN first_published_at END DESC NULLS LAST,
                         design_id DESC
-                    LIMIT %s OFFSET %s
+                    LIMIT %(limit)s OFFSET %(offset)s
                     """,
-                    filter_params + (sort, sort, sort, sort, limit, offset),
+                    {**params, "sort": sort, "limit": limit, "offset": offset},
                 )
                 rows = cursor.fetchall()
 
                 # Step 2: total matching designs, ignoring limit/offset
                 cursor.execute(
                     DESIGNS_BASE_SQL + "SELECT COUNT(*) AS total " + DESIGNS_FILTER_SQL,
-                    filter_params,
+                    params,
                 )
                 total = cursor.fetchone()["total"]
 
-                # Remove internal fields from the response (only used for ordering)
+                # Step 3: colors each design on this page is available in (same "available" rule as the
+                # size/color filters; only the chosen product type when one is set). One query for the whole page;
+                # the unused `base` CTE is not run by PostgreSQL. Color dots and mockups on the cards use this.
+                colors_by_design: dict[int, list] = {row["design_id"]: [] for row in rows}
+                if rows:
+                    cursor.execute(
+                        DESIGNS_BASE_SQL
+                        + """
+                        SELECT design_id, color_name, MAX(color_hex) AS color_hex
+                        FROM available
+                        WHERE design_id = ANY(%(ids)s)
+                          AND color_name IS NOT NULL
+                          AND (%(product_type)s::text IS NULL OR lower(product_type) = lower(%(product_type)s))
+                        GROUP BY design_id, color_name
+                        ORDER BY design_id, color_name
+                        """,
+                        {**params, "ids": list(colors_by_design)},
+                    )
+                    for c in cursor.fetchall():
+                        colors_by_design[c["design_id"]].append({"color_name": c["color_name"], "color_hex": c["color_hex"]})
+
+                # Remove internal fields from the response (only used for filtering and ordering)
                 for row in rows:
+                    row["colors"] = colors_by_design[row["design_id"]]
                     row.pop("design_id")
+                    row.pop("category_id")
                     row.pop("popularity")
 
                 return {"items": rows, "total": total, "limit": limit, "offset": offset}
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+# Registered before /designs/{public_design_code}, otherwise "facets" would be read as a design code
+@app.get("/designs/facets")
+def get_design_facets(
+    category_slug: str | None = None,
+    search: str | None = Query(default=None, max_length=100),
+    price_min: float | None = Query(default=None, ge=0),
+    price_max: float | None = Query(default=None, ge=0),
+    product_type: str | None = Query(default=None, max_length=50),
+    min_orders: int = Query(default=0, ge=0),
+    sizes: str | None = Query(default=None, max_length=500),
+    colors: str | None = Query(default=None, max_length=1000),
+):
+    # Counts for the listing sidebar. Same filters as GET /designs; each facet ignores its own
+    # filter and applies all the others, so choosing "M" still shows the counts of the other sizes.
+    params = design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors)
+
+    def without(*keys):
+        return {**params, **{k: None for k in keys}}
+
+    # Designs that pass the filters, as an extra CTE after `base`
+    matched_sql = ", matched AS (SELECT design_id, category_id " + DESIGNS_FILTER_SQL + ")\n"
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # total: every filter applies
+                cursor.execute(DESIGNS_BASE_SQL + "SELECT COUNT(*) AS total " + DESIGNS_FILTER_SQL, params)
+                total = cursor.fetchone()["total"]
+
+                # price: range of starting prices, ignoring the price filter (null when nothing matches)
+                cursor.execute(
+                    DESIGNS_BASE_SQL + "SELECT MIN(starting_price) AS min, MAX(starting_price) AS max " + DESIGNS_FILTER_SQL,
+                    without("price_min", "price_max"),
+                )
+                price = cursor.fetchone()
+
+                # sizes: every size that exists on an available variant of a published design, with the
+                # number of matching designs available in it (ignoring the size filter, keeping colors)
+                cursor.execute(
+                    DESIGNS_BASE_SQL + matched_sql + """
+                    SELECT all_sizes.size_code, COUNT(DISTINCT a.design_id) AS count
+                    FROM (
+                        SELECT DISTINCT av.size_code
+                        FROM available av
+                        JOIN designs d ON d.design_id = av.design_id AND d.design_status = 'published'
+                        WHERE av.size_code IS NOT NULL
+                    ) all_sizes
+                    LEFT JOIN available a
+                           ON a.size_code = all_sizes.size_code
+                          AND a.design_id IN (SELECT design_id FROM matched)
+                          AND (%(colors)s::text[] IS NULL OR lower(a.color_name) = ANY(%(colors)s::text[]))
+                          AND (%(product_type)s::text IS NULL OR lower(a.product_type) = lower(%(product_type)s))
+                    GROUP BY all_sizes.size_code
+                    ORDER BY array_position(%(size_order)s::text[], upper(all_sizes.size_code)::text) NULLS LAST,
+                             all_sizes.size_code
+                    """,
+                    {**without("sizes"), "size_order": SIZE_ORDER},
+                )
+                size_counts = cursor.fetchall()
+
+                # colors: same idea, ignoring the color filter and keeping the size filter
+                cursor.execute(
+                    DESIGNS_BASE_SQL + matched_sql + """
+                    SELECT all_colors.color_name, all_colors.color_hex, COUNT(DISTINCT a.design_id) AS count
+                    FROM (
+                        SELECT av.color_name, MAX(av.color_hex) AS color_hex
+                        FROM available av
+                        JOIN designs d ON d.design_id = av.design_id AND d.design_status = 'published'
+                        WHERE av.color_name IS NOT NULL
+                        GROUP BY av.color_name
+                    ) all_colors
+                    LEFT JOIN available a
+                           ON a.color_name = all_colors.color_name
+                          AND a.design_id IN (SELECT design_id FROM matched)
+                          AND (%(sizes)s::text[] IS NULL OR upper(a.size_code) = ANY(%(sizes)s::text[]))
+                          AND (%(product_type)s::text IS NULL OR lower(a.product_type) = lower(%(product_type)s))
+                    GROUP BY all_colors.color_name, all_colors.color_hex
+                    ORDER BY all_colors.color_name
+                    """,
+                    without("colors"),
+                )
+                color_counts = cursor.fetchall()
+
+                # niches: the niches of the chosen interest (or of the chosen niche's interest), counted
+                # with every filter except the category. No category chosen -> no niches.
+                niches = []
+                if params["slug"]:
+                    cursor.execute(
+                        """
+                        SELECT COALESCE(parent_category_id, category_id) AS interest_id
+                        FROM categories
+                        WHERE lower(category_slug) = lower(%(slug)s)
+                          AND category_status = 'active'
+                        """,
+                        params,
+                    )
+                    found = cursor.fetchone()
+                    if found is not None:
+                        cursor.execute(
+                            DESIGNS_BASE_SQL + matched_sql + """
+                            SELECT n.category_id, n.category_name, n.category_slug, COUNT(m.design_id) AS count
+                            FROM categories n
+                            LEFT JOIN matched m ON m.category_id = n.category_id
+                            WHERE n.parent_category_id = %(interest_id)s
+                              AND n.category_status = 'active'
+                            GROUP BY n.category_id, n.category_name, n.category_slug, n.display_order
+                            ORDER BY n.display_order, n.category_name
+                            """,
+                            {**without("slug"), "interest_id": found["interest_id"]},
+                        )
+                        niches = cursor.fetchall()
+
+                return {
+                    "niches": niches,
+                    "price": {"min": price["min"], "max": price["max"]},
+                    "sizes": size_counts,
+                    "colors": color_counts,
+                    "total": total,
+                }
 
     except psycopg.Error as e:
         print("DATABASE ERROR:", repr(e))

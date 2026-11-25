@@ -21,3 +21,9 @@ export const COLLECTIONS:{name:string;img:string;category:string;alt:string}[] =
   {name:'Anime Collection', img:'/collections/anime.png', category:'anime', alt:'Anime Collection: iconic styles for anime fans. Shop Collection'},
   {name:'Retro Collection', img:'/collections/retro.png', category:'vintage', alt:'Retro Collection: vintage vibes, modern tees. Shop Collection'},
 ];
+
+// Sizes customers can see and choose, in display order. XS is not sold: it never appears in the
+// listing filters, facet counts or product size selectors, even if the API returns it.
+export const SIZES = ['S','M','L','XL','2XL','3XL'];
+export const HIDDEN_SIZES = ['XS'];
+export const isHiddenSize = (code:string|null|undefined) => !!code && HIDDEN_SIZES.includes(code.trim().toUpperCase());

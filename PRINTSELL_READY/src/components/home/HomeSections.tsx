@@ -17,7 +17,7 @@ function SectionHead({id,title,subtitle,href,linkText,flame}:{id:string;title:st
   </div>;
 }
 
-function SectionError({error,retry}:{error:string;retry:()=>void}){
+export function SectionError({error,retry}:{error:string;retry:()=>void}){
   return <div className="ps-error"><p className="error">{error}</p><button type="button" className="ps-btn ps-btn-purple" onClick={retry}>Retry</button></div>;
 }
 
