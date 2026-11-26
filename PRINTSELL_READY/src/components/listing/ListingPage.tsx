@@ -77,10 +77,9 @@ export function ListingPage({categoryImages,collection=null,onWish,wishlist}:{ca
     ?'Original graphic tees matching "'+query.search+'"'+(interestName?' in '+interestName:'')+', designed in-house and printed just for you.'
     :deals?'Our best-value graphic tees, lowest price first. Free US shipping on orders over '+FREE_SHIPPING_LABEL+'.'
     :interest?.description||'Original graphic tees, designed in-house by the PrintSteez team and printed just for you.';
-  // The banner image has its title drawn in (e.g. "Animals T-Shirts"), so it is only used when that title is right:
-  // not for a search ("Search: ...") and not for another product type (hoodies, ...).
+  // The banner image is only a background (the text is code), so it fits any title: search, hoodies, ...
   const slug=(query.category||'all').toLowerCase();
-  const heroImage=query.search||typeNoun||deals?null:categoryImages.find(c=>c.slug===slug)||null;
+  const heroImage=deals?null:categoryImages.find(c=>c.slug===slug)||null;
   const heroCover=heroImage?null:imageUrl(interest?.cover_url);
 
   const total=list.data?.total??null;

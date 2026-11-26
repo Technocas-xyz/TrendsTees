@@ -2,7 +2,7 @@
 import {useEffect,useState} from 'react';
 import Link from 'next/link';
 import {useRouter} from 'next/navigation';
-import {ArrowLeft,ArrowRight,Check,CreditCard,Lock,Mail,MapPin,Package,PenLine,Phone,ShieldCheck,Truck,UserRound} from 'lucide-react';
+import {ArrowLeft,ArrowRight,Check,CreditCard,Lock,Mail,MapPin,Package,Phone,ShieldCheck,Smartphone,Truck,Wallet} from 'lucide-react';
 import {ApiError,createCheckout,getCartQuote,getCartToken,getCities,getCountries,getMe,getShippingMethods,getStates,imageUrl,placeOrder,type ApiCart,type ApiQuote} from '@/lib/api';
 import type {Shipping} from '@/components/data';
 import {FREE_SHIPPING_LABEL,RETURN_DAYS} from '@/lib/config';
@@ -44,21 +44,20 @@ function Section({n,title,sub,children}:{n:number;title:string;sub?:string;child
 // Order summary items: thumbnails from the cart (it has each variant's color)
 function SummaryItems({items}:{items:{key:string;title:string;product:string;color:string|null;hex?:string|null;size:string|null;qty:number;total:string|number;image:string|null}[]}){
   return <ul className="sh-sum-items">{items.map(x=><li key={x.key}>
-    <span className="sh-sum-pic"><ColorTee hex={x.hex} colorName={x.color} image={x.image}/><span className="sh-sum-qty" aria-label={'Quantity '+x.qty}>{x.qty}</span></span>
-    <div><b>{x.title}</b><small>{x.product}</small><small>{[x.size&&'Size: '+x.size,x.color&&'Color: '+x.color].filter(Boolean).join('  ')}</small></div>
+    <span className="sh-sum-pic"><ColorTee hex={x.hex} colorName={x.color} image={x.image}/></span>
+    <div><b>{x.title}</b><small>{x.product}</small><small>{[x.size&&'Size: '+x.size,x.color&&'Color: '+x.color].filter(Boolean).join('  ')}</small><small className="sh-sum-q">Qty: {x.qty}</small></div>
     <b className="sh-sum-total">{money(x.total)}</b>
   </li>)}</ul>;
 }
 
 // ---------- Step 2: contact, address, shipping method (POST /checkout makes the server quote) ----------
-export function CheckoutShippingPage({cart}:{cart:ApiCart|null}){
+export function CheckoutShippingPage({cart,onOrderPlaced}:{cart:ApiCart|null;onOrderPlaced:()=>void}){
   const router=useRouter();
   const methods=useApi(getShippingMethods,'shipping-methods');
   const [form,setForm]=useState<Shipping>(blankShipping),[first,setFirst]=useState(''),[last,setLast]=useState('');
   const [error,setError]=useState(''),[errs,setErrs]=useState<{first?:string;last?:string;city?:string;zip?:string}>({}),[busy,setBusy]=useState(false);
   // Country -> state -> city lists come from the API; each list reloads when the choice above it changes
   const countries=useApi(getCountries,'countries'),states=useApi(async()=>form.country?await getStates(form.country):[],'states|'+form.country),cities=useApi(async()=>form.stateId?await getCities(form.stateId):[],'cities|'+form.stateId);
-  useEffect(()=>{const s=readSession<CheckoutState>(CHECKOUT_KEY);if(s){setForm({...blankShipping,...s.form});const [f,l]=splitName(s.form.fullName||'');setFirst(f);setLast(l)}},[]);
   useEffect(()=>{getMe().then(u=>{if(!u)return;setForm(f=>({...f,email:f.email||u.email}));const [fn,ln]=splitName(u.full_name);setFirst(v=>v||fn);setLast(v=>v||ln)}).catch(()=>{})},[]);
   useEffect(()=>{const list=countries.data;if(list&&list.length===1)setForm(f=>f.country?f:{...f,country:list[0].code})},[countries.data]);
   useEffect(()=>{const list=methods.data;if(list&&list.length&&!list.some(x=>x.code===form.shippingMethod))setForm(f=>({...f,shippingMethod:list[0].code}))},[methods.data]);
@@ -91,10 +90,14 @@ export function CheckoutShippingPage({cart}:{cart:ApiCart|null}){
     try{
       const phone=form.phone.trim();
       const address={full_name:fullName,phone:phone.startsWith('+')||!country?phone:'+'+country.phone_code+' '+phone,line_1:form.address.trim(),...(form.apartment.trim()?{line_2:form.apartment.trim()}:{}),city:city.city_name,state_region:form.state,postal_code:form.zip.trim(),country_code:form.country};
+      // 1) the server prices the cart and holds the quote, 2) the demo payment places the order from that quote
       const quote=await createCheckout({cart_token:token,contact_email:form.email.trim(),shipping_method_code:form.shippingMethod,shipping_address:address});
-      writeSession(CHECKOUT_KEY,{quote,form:{...form,fullName,city:city.city_name}});
-      router.push('/checkout/payment');
-    }catch(err){setError(errText(err))}finally{setBusy(false)}
+      const r=await placeOrder(quote.checkout_session_id,token);
+      writeSession(LAST_ORDER_KEY,{code:r.order_public_code,total:Number(r.order_total),email:form.email.trim()});
+      clearSession(CHECKOUT_KEY);onOrderPlaced();router.push('/checkout/confirmation');
+      return;
+    }catch(err){setError(errText(err))}
+    setBusy(false);
   }
   const fieldError=(id:string,m?:string)=>m?<small className="sh-field-err" id={id} role="alert">{m}</small>:null;
   const q=quote.data;
@@ -117,7 +120,7 @@ export function CheckoutShippingPage({cart}:{cart:ApiCart|null}){
 
           <Section n={2} title="Shipping Address" sub="Where should we send your tees?">
             <div className="sh-grid">
-              <label className="sh-field">First Name <i aria-hidden="true">*</i><span className="sh-input"><UserRound aria-hidden="true"/><input required autoComplete="given-name" value={first} onChange={e=>{setFirst(e.target.value);setErrs(x=>({...x,first:undefined}))}} aria-invalid={!!errs.first} aria-describedby={errs.first?'err-first':undefined}/></span>{fieldError('err-first',errs.first)}</label>
+              <label className="sh-field">First Name <i aria-hidden="true">*</i><span className="sh-input"><input required autoComplete="given-name" value={first} onChange={e=>{setFirst(e.target.value);setErrs(x=>({...x,first:undefined}))}} aria-invalid={!!errs.first} aria-describedby={errs.first?'err-first':undefined}/></span>{fieldError('err-first',errs.first)}</label>
               <label className="sh-field">Last Name <i aria-hidden="true">*</i><span className="sh-input"><input required autoComplete="family-name" value={last} onChange={e=>{setLast(e.target.value);setErrs(x=>({...x,last:undefined}))}} aria-invalid={!!errs.last} aria-describedby={errs.last?'err-last':undefined}/></span>{fieldError('err-last',errs.last)}</label>
               <label className="sh-field wide">Address <i aria-hidden="true">*</i><span className="sh-input"><MapPin aria-hidden="true"/><input required autoComplete="address-line1" value={form.address} onChange={e=>update('address',e.target.value)} placeholder="Street address"/></span></label>
               <label className="sh-field wide">Apartment, Suite, etc. <em>(Optional)</em><span className="sh-input"><input autoComplete="address-line2" value={form.apartment} onChange={e=>update('apartment',e.target.value)}/></span></label>
@@ -140,10 +143,20 @@ export function CheckoutShippingPage({cart}:{cart:ApiCart|null}){
             </label>)}</div>:methods.error?<div className="sh-inline-err"><p className="error">{methods.error}</p><button type="button" className="sh-link" onClick={methods.retry}>Retry</button></div>:<p className="sh-muted">Loading…</p>}
           </Section>
 
+          <Section n={4} title="Payment Method" sub="Online payment is not live yet.">
+            <div className="sh-methods sh-pay" role="radiogroup" aria-label="Payment method">
+              <label className="sh-method on"><input type="radio" name="payment" checked readOnly/><CreditCard aria-hidden="true"/>
+                <span className="sh-method-text"><b>Demo payment</b><small>No real charge is made. Your order is created so you can track it.</small></span></label>
+              {([['Credit or Debit Card',CreditCard],['PayPal',Wallet],['Apple Pay',Smartphone]] as const).map(([name,Icon])=>
+                <label key={name} className="sh-method off" aria-disabled="true"><input type="radio" name="payment" disabled/><Icon aria-hidden="true"/>
+                  <span className="sh-method-text"><b>{name}</b></span><span className="sh-soon">Coming soon</span></label>)}
+            </div>
+            <p className="sh-notice" role="note">Demo payment only. No card details are needed and no money is taken.</p>
+          </Section>
+
           {error&&<div className="error" role="alert">{error}</div>}
           <div className="sh-co-actions">
             <Link className="sh-back" href="/cart"><ArrowLeft size={16} aria-hidden="true"/> Return to Cart</Link>
-            <button className="ps-btn ps-btn-purple sh-co-next" type="submit" disabled={busy||!methods.data}>{busy?'Checking…':'Continue to Review & Pay'} <ArrowRight size={17} aria-hidden="true"/></button>
           </div>
         </form>
 
@@ -159,8 +172,9 @@ export function CheckoutShippingPage({cart}:{cart:ApiCart|null}){
             <div className="sh-row"><span>Tax</span><b>{q?money(q.tax_total):'…'}</b></div>
             <div className="sh-row total"><span>Total</span><b>{q?money(q.total):'…'}</b></div>
             {quote.error&&<p className="error" role="alert">{quote.error}</p>}
-            <button type="submit" form="sh-checkout-form" className="ps-btn ps-btn-purple sh-checkout-btn" disabled={busy||!methods.data}><Lock size={17} aria-hidden="true"/> {busy?'Checking…':'Continue to Review & Pay'}</button>
-            <p className="sh-tiny">Your final total is confirmed on the next step.</p>
+            <button type="submit" form="sh-checkout-form" className="ps-btn ps-btn-orange sh-place" disabled={busy||!methods.data}><Lock size={18} aria-hidden="true"/> {busy?'Placing order…':'Place Order'+(q?' – '+money(q.total):'')}</button>
+            <p className="sh-secure"><Lock size={14} aria-hidden="true"/> Demo checkout, no real charge</p>
+            <p className="sh-tiny">The final total is confirmed by the server when you place the order.</p>
           </section>
           <Confidence/>
         </aside>
@@ -181,80 +195,12 @@ function Confidence(){
   </section>;
 }
 
-// ---------- Step 3: review the server quote, demo payment, place the order ----------
-export function CheckoutPaymentPage({cart,onOrderPlaced}:{cart:ApiCart|null;onOrderPlaced:()=>void}){
+// The old Review & Pay URL: checkout is one page now, so send people there
+export function CheckoutPaymentPage(){
   const router=useRouter();
-  const [state,setState]=useState<CheckoutState|null>(null),[ready,setReady]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(''),[review,setReview]=useState(false);
-  useEffect(()=>{setState(readSession<CheckoutState>(CHECKOUT_KEY));setReady(true)},[]);
-  async function place(){
-    const token=getCartToken();
-    if(!state)return;
-    if(!token){setError('Your cart is empty.');return}
-    setBusy(true);setError('');setReview(false);
-    try{
-      const r=await placeOrder(state.quote.checkout_session_id,token);
-      writeSession(LAST_ORDER_KEY,{code:r.order_public_code,total:Number(r.order_total),email:state.form.email});
-      clearSession(CHECKOUT_KEY);onOrderPlaced();router.push('/checkout/confirmation');
-    }catch(e){setError(errText(e));setReview(e instanceof ApiError&&(e.status===400||e.status===409))}finally{setBusy(false)}
-  }
-  if(!ready)return <main className="sh-page sh-co"><CheckoutHero/><div className="sh-wrap"><CheckoutSteps active={2}/><p className="sh-muted" aria-busy="true">Loading…</p></div></main>;
-  if(!state)return <main className="sh-page sh-co"><CheckoutHero/><div className="sh-wrap"><CheckoutSteps active={2}/>
-    <div className="sh-empty"><Package size={46} strokeWidth={1.5} aria-hidden="true"/><h2>No checkout in progress</h2><p>Enter your shipping details first.</p><Link className="ps-btn ps-btn-purple" href="/checkout/shipping">Go to checkout <ArrowRight size={16}/></Link></div></div></main>;
-  const {quote:q,form:ship}=state;
-  // color swatches for the thumbnails come from the cart (the quote has color names only)
-  const hexOf=(sku:string,name:string|null)=>cart?.items.find(x=>x.sku===sku)?.color_hex||cart?.items.find(x=>x.color_name===name)?.color_hex||null;
-  const items=q.items.map((x,i)=>({key:x.sku+i,title:x.title,product:x.product_name,color:x.color_name,hex:hexOf(x.sku,x.color_name),size:x.size_code,qty:x.quantity,total:x.line_total,image:imageUrl(x.preview_url)}));
-  const count=q.items.reduce((s,x)=>s+x.quantity,0);
-  const disc=Number(q.discount_total),shipAmt=Number(q.shipping_amount);
-
-  return <main className="sh-page sh-co">
-    <CheckoutHero/>
-    <div className="sh-wrap">
-      <CheckoutSteps active={2}/>
-      <div className="sh-two">
-        <div className="sh-col-main">
-          <Section n={1} title="Contact & Shipping" sub="Check where your order is going.">
-            <div className="sh-review">
-              <div><span className="sh-review-k">Contact</span><p>{ship.email}<br/>{ship.phone}</p></div>
-              <div><span className="sh-review-k">Ship to</span><p>{ship.fullName}<br/>{ship.address}{ship.apartment?', '+ship.apartment:''}<br/>{ship.city}, {ship.state} {ship.zip}</p></div>
-              <Link className="sh-link" href="/checkout/shipping"><PenLine size={15} aria-hidden="true"/> Edit</Link>
-            </div>
-            {q.estimated_delivery_start&&<p className="sh-delivery"><Truck aria-hidden="true"/> Estimated delivery: <b>{shortDate(q.estimated_delivery_start)}{q.estimated_delivery_end&&' – '+shortDate(q.estimated_delivery_end)}</b></p>}
-          </Section>
-          <Section n={2} title="Payment Method" sub="Online payment is not live yet.">
-            <div className="sh-methods" role="radiogroup" aria-label="Payment method">
-              <label className="sh-method on"><input type="radio" name="payment" checked readOnly/><CreditCard aria-hidden="true"/>
-                <span className="sh-method-text"><b>Demo payment</b><small>No real charge is made. Your order is created so you can track it.</small></span></label>
-            </div>
-            <p className="sh-notice" role="note">Demo payment only. No card details are needed and no money is taken.</p>
-          </Section>
-          {error&&<p className="error" role="alert">{error}</p>}
-          {review&&<Link className="sh-outline-btn" href="/checkout/shipping">Review your order</Link>}
-          <div className="sh-co-actions"><Link className="sh-back" href="/checkout/shipping"><ArrowLeft size={16} aria-hidden="true"/> Back to Checkout</Link></div>
-        </div>
-
-        <aside className="sh-col-side">
-          <section className="sh-card sh-summary" aria-labelledby="sh-paysum-title">
-            <h2 id="sh-paysum-title">Order Summary</h2>
-            <p className="sh-muted">{count} {count===1?'item':'items'} designed by the PrintSteez team</p>
-            <SummaryItems items={items}/>
-            <PromoBox/>
-            <div className="sh-row"><span>Subtotal ({count} {count===1?'item':'items'})</span><b>{money(q.subtotal)}</b></div>
-            {disc>0&&<div className="sh-row disc"><span>{q.discount_name||'Discount'}</span><b>−{money(disc)}</b></div>}
-            <div className="sh-row"><span>Shipping</span><b>{shipAmt===0?'FREE':money(shipAmt)}</b></div>
-            <div className="sh-row"><span>Tax{ship.state?' ('+ship.state+')':''}</span><b>{money(q.tax_total)}</b></div>
-            <div className="sh-row total"><span>Total</span><b>{money(q.total)}</b></div>
-            <button type="button" className="ps-btn ps-btn-orange sh-place" disabled={busy} onClick={place}><Lock size={18} aria-hidden="true"/> {busy?'Placing order…':'Place Order – '+money(q.total)}</button>
-            <p className="sh-secure"><Lock size={14} aria-hidden="true"/> Demo checkout, no real charge</p>
-            {q.quote_expires_at&&<p className="sh-tiny">Prices are held until {new Date(q.quote_expires_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}.</p>}
-          </section>
-          <Confidence/>
-        </aside>
-      </div>
-    </div>
-  </main>;
+  useEffect(()=>{router.replace('/checkout/shipping')},[router]);
+  return <main className="sh-page sh-co"><div className="sh-wrap"><p className="sh-muted" aria-busy="true">Loading…</p></div></main>;
 }
-
 // ---------- Step 4: order complete ----------
 export function CheckoutConfirmationPage(){
   const [order,setOrder]=useState<{code:string;total:number;email:string}|null>(null),[ready,setReady]=useState(false);

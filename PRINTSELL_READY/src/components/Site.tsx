@@ -68,8 +68,8 @@ else if(parts[0]==='collections'&&parts.length===2&&findCollection(parts[1]))pag
 else if(path==='/animals-pets'||path==='/dog-designs')page=<Listing key={category} dogs={path==='/dog-designs'} search={search} category={category} onWish={onWish} wishlist={wishlist}/>;// Design page. The older /choose-product and /customize URLs open the same page (?product=<id> preselects the product).
 else if(parts[0]==='designs'&&parts[1]&&(parts.length===2||parts[2]==='choose-product'||parts[2]==='customize'))page=<DetailPage code={designCode} initialProductId={query.get('product')||undefined} onWish={onWish} wishlist={wishlist} add={add}/>;
 else if(path==='/cart')page=<CartPage cart={apiCart} error={cartError} retry={refreshCart} update={update} remove={remove} onWish={onWish} wishlist={wishlist}/>;
-else if(path==='/checkout/shipping')page=<CheckoutShippingPage cart={apiCart}/>;
-else if(path==='/checkout/payment')page=<CheckoutPaymentPage cart={apiCart} onOrderPlaced={orderPlaced}/>;
+else if(path==='/checkout/shipping')page=<CheckoutShippingPage cart={apiCart} onOrderPlaced={orderPlaced}/>;
+else if(path==='/checkout/payment')page=<CheckoutPaymentPage/>;
 else if(path==='/checkout/confirmation')page=<CheckoutConfirmationPage/>;else if(path==='/track-order')page=<Tracking key={(query.get('code')||'')+'|'+(query.get('email')||'')} initialCode={query.get('code')||''} initialEmail={query.get('email')||''}/>;else if(path==='/wishlist')page=<WishlistPage wishlist={wishlist} onWish={onWish}/>;
 // Help and legal pages (/faq, /shipping, /returns, /contact, /about, /privacy, /terms, /cookies)
 else if(parts.length===1&&isInfoPage(parts[0]))page=<InfoPage slug={parts[0]}/>;

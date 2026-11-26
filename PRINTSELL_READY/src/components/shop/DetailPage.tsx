@@ -3,13 +3,15 @@ import {useEffect,useMemo,useRef,useState} from 'react';
 import Link from 'next/link';
 import {ArrowRight,Check,Heart,Minus,Plus,Ruler,ShoppingCart,Truck} from 'lucide-react';
 import {getDesign,getDesigns,getVariants,toDesign,type ApiDesign,type ApiVariant} from '@/lib/api';
-import {FREE_SHIPPING_LABEL,PRODUCTION_TIME,RETURN_DAYS,SHIPS_TO,SIZES,SIZE_CHART,isHiddenSize} from '@/lib/config';
+import {DELIVERY_BUSINESS_DAYS,FREE_SHIPPING_LABEL,PRODUCTION_TIME,RETURN_DAYS,SHIPS_TO,SIZES,SIZE_CHART,isHiddenSize} from '@/lib/config';
 import {ProductCard,ProductCardSkeleton} from '@/components/home/ProductCard';
 import {Newsletter} from '@/components/home/HomeSections';
 import {useApi} from '@/components/home/useApi';
 import {saveRecent} from '@/components/listing/recent';
 import {Breadcrumb,ColorTee,LoadState,errText,money} from './ShopBits';
 
+// today + n business days (Saturdays and Sundays are skipped), shown like "Jan 29"
+function businessDay(n:number){const d=new Date();while(n>0){d.setDate(d.getDate()+1);if(d.getDay()!==0&&d.getDay()!==6)n--}return d.toLocaleDateString('en-US',{month:'short',day:'numeric'})}
 type AddToCart=(code:string,variantId:number,quantity:number)=>Promise<void>;
 const STAR='M12 2.5l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5L2.5 9.4l6.6-.9z';
 
@@ -129,6 +131,7 @@ function Buy({d,productId,productName,products,setProductId,wished,onWish,add,op
 
     <div className="sh-buy">
       <h1 className="sh-title">{d.name}</h1>
+      <div className="sh-by"><span className="sh-by-logo" aria-hidden="true">PS</span><div><b>Designed by PrintSteez</b><small>Original in-house design</small></div></div>
       {/* no reviews yet: empty stars, no numbers */}
       <div className="sh-stars" aria-label="No reviews yet">{[1,2,3,4,5].map(i=><svg key={i} width="17" height="17" viewBox="0 0 24 24" aria-hidden="true"><path d={STAR} fill="#E5E7EB"/></svg>)}<span>No reviews yet</span></div>
       <p className="sh-price">{!variant&&prices.length>1&&new Set(prices).size>1?'From ':''}{money(price)}</p>
@@ -180,7 +183,7 @@ function Buy({d,productId,productName,products,setProductId,wished,onWish,add,op
 
       <div className="sh-ship-box">
         <Truck aria-hidden="true"/>
-        <div><b>Free shipping on orders over {FREE_SHIPPING_LABEL}</b><small>Printed to order in {PRODUCTION_TIME} · Ships to {SHIPS_TO}</small></div>
+        <div><b>Estimated delivery: {businessDay(DELIVERY_BUSINESS_DAYS.min)} – {businessDay(DELIVERY_BUSINESS_DAYS.max)}</b><small>Free shipping on orders over {FREE_SHIPPING_LABEL} · Printed to order in {PRODUCTION_TIME} · Ships to {SHIPS_TO}</small></div>
       </div>
     </div>
   </div>;
