@@ -14,7 +14,7 @@ export const SHOW_PROMO_BANNER = false;
 export const PROMO_CODE = 'STEEZ10';
 export const PROMO_TEXT = 'for 10% Off Your First Order';
 
-// Curated collections, each at /collections/<slug>. The banner is public/collections/<slug>.png (its title and
+// Curated collections, each at /collections/<slug>. The banner is public/collections/<slug>.webp (its title and
 // "Shop Collection" button are drawn in the image). Which designs belong to it:
 //   terms    = designs whose title or one of its tags contains ANY of these words (max 10)
 //   category = designs in this interest (and its niches)
@@ -33,7 +33,7 @@ export const COLLECTIONS:Collection[] = [
    description:'Vintage vibes on modern tees: retro, 80s and 90s classics.',
    terms:['retro','vintage','80s','90s','classic']},
 ];
-export const collectionImage = (c:Collection) => '/collections/' + c.slug + '.png';
+export const collectionImage = (c:Collection) => '/collections/' + c.slug + '.webp';
 export const collectionHref = (c:Collection) => '/collections/' + c.slug;
 export const findCollection = (slug:string) => COLLECTIONS.find(c => c.slug === slug.toLowerCase()) || null;
 
