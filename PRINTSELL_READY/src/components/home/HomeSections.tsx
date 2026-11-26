@@ -3,7 +3,7 @@ import {useState} from 'react';
 import Link from 'next/link';
 import {ArrowRight,Mail,Palette,RotateCcw,Send,ShieldCheck,Truck} from 'lucide-react';
 import {getActiveProducts,getDesigns,toDesign,type ApiInterest,type DesignParams} from '@/lib/api';
-import {COLLECTIONS,FREE_SHIPPING_LABEL} from '@/lib/config';
+import {COLLECTIONS,FREE_SHIPPING_LABEL,PRODUCT_TYPES,collectionHref,collectionImage,productTypeHref} from '@/lib/config';
 import {ProductCard,ProductCardSkeleton} from './ProductCard';
 import {Flame,InterestIcon} from './interestIcons';
 import {useApi} from './useApi';
@@ -45,23 +45,24 @@ export function DesignRow({id,title,subtitle,href,linkText,params,badge,flame,hi
 }
 
 // ---- Shop by Product Type ----
-// Types the API does not return (not sold yet) get a "Coming soon" tag and are not links.
-const TYPES:{key:string;name:string;text:string;img:string}[]=[
-  {key:'tshirt',name:'T-Shirts',text:'Classic graphic tees for every style.',img:'/products/tshirt.png'},
-  {key:'hoodie',name:'Hoodies',text:'Cozy comfort with bold designs.',img:'/products/hoodie.png'},
-  {key:'long_sleeve',name:'Long Sleeves',text:'Graphic styles for cooler days.',img:'/products/longsleeve.png'},
-  {key:'sweatshirt',name:'Sweatshirts',text:'Everyday comfort, original designs.',img:'/products/sweatshirt.png'},
-];
+// Types with an active product link to /designs?product_type=<slug>. The others are not links and show "Coming soon".
+const TYPE_TEXT:Record<string,{text:string;img:string}>={
+  tshirt:{text:'Classic graphic tees for every style.',img:'/products/tshirt.png'},
+  hoodie:{text:'Cozy comfort with bold designs.',img:'/products/hoodie.png'},
+  longsleeve:{text:'Graphic styles for cooler days.',img:'/products/longsleeve.png'},
+  sweatshirt:{text:'Everyday comfort, original designs.',img:'/products/sweatshirt.png'},
+};
 export function ProductTypes(){
   const a=useApi(()=>getActiveProducts(),'product-types');
   const sold=new Set((a.data||[]).map(p=>p.product_type));
   return <section className="ps-section" aria-labelledby="ps-types-title">
     <SectionHead id="ps-types-title" title="Shop by Product Type" subtitle="More than just tees. Find your perfect fit."/>
     {a.error?<SectionError error={a.error} retry={a.retry}/>:!a.data?
-      <div className="ps-types" aria-hidden="true">{TYPES.map(t=><span key={t.key} className="ps-type ps-skel-box"/>)}</div>:
-      <div className="ps-types">{TYPES.map(t=>{
-        const body=<><img src={t.img} alt="" loading="lazy"/><span className="ps-type-text"><b>{t.name}</b><small>{t.text}</small>{sold.has(t.key)?<span className="ps-circle" aria-hidden="true"><ArrowRight size={14} strokeWidth={2.6}/></span>:<span className="ps-soon">Coming soon</span>}</span></>;
-        return sold.has(t.key)?<Link key={t.key} href={'/designs?product='+t.key} className="ps-type">{body}</Link>:<div key={t.key} className="ps-type soon">{body}</div>;
+      <div className="ps-types" aria-hidden="true">{PRODUCT_TYPES.map(t=><span key={t.slug} className="ps-type ps-skel-box"/>)}</div>:
+      <div className="ps-types">{PRODUCT_TYPES.map(t=>{
+        const on=sold.has(t.api),info=TYPE_TEXT[t.slug];
+        const body=<><img src={info.img} alt="" loading="lazy"/><span className="ps-type-text"><b>{t.label}</b><small>{info.text}</small>{on?<span className="ps-circle" aria-hidden="true"><ArrowRight size={14} strokeWidth={2.6}/></span>:<span className="ps-soon">Coming soon</span>}</span></>;
+        return on?<Link key={t.slug} href={productTypeHref(t.slug)} className="ps-type">{body}</Link>:<div key={t.slug} className="ps-type soon">{body}</div>;
       })}</div>}
   </section>;
 }
@@ -71,7 +72,7 @@ export function ProductTypes(){
 export function Collections(){
   return <section className="ps-section" id="collections" aria-labelledby="ps-collections-title">
     <SectionHead id="ps-collections-title" title="Curated Collections" subtitle="Themed drops and handpicked favorites." href="/designs" linkText="Browse All Collections"/>
-    <div className="ps-collections">{COLLECTIONS.map(c=><Link key={c.name} href={'/designs?category='+c.category} className="ps-collection" aria-label={'Shop the '+c.name}><img src={c.img} alt={c.alt} loading="lazy"/></Link>)}</div>
+    <div className="ps-collections">{COLLECTIONS.map(c=><Link key={c.slug} href={collectionHref(c)} className="ps-collection" aria-label={'Shop the '+c.name}><img src={collectionImage(c)} alt={c.alt} loading="lazy"/></Link>)}</div>
   </section>;
 }
 
@@ -92,9 +93,16 @@ export function WhyShop(){
   </section>;
 }
 
-// ---- Newsletter (no backend yet: nothing is sent or saved) ----
+// ---- Newsletter (no backend yet: the address is checked, then nothing is sent or saved) ----
+const EMAIL=/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 export function Newsletter(){
-  const [done,setDone]=useState(false);
+  const [done,setDone]=useState(false),[email,setEmail]=useState(''),[error,setError]=useState('');
+  function subscribe(e:React.FormEvent){
+    e.preventDefault();
+    const value=email.trim();
+    if(!EMAIL.test(value)||value.length>254){setError('Please enter a valid email address, like name@example.com.');return}
+    setError('');setDone(true);
+  }
   return <section className="ps-news" aria-labelledby="ps-news-title">
     <svg className="ps-news-brush" viewBox="0 0 240 120" preserveAspectRatio="none" aria-hidden="true">
       <path d="M70 135 L250 -5" stroke="#F97316" strokeWidth="30" strokeLinecap="round"/>
@@ -105,10 +113,14 @@ export function Newsletter(){
     <div className="ps-news-inner">
       <Send size={50} strokeWidth={1.5} className="ps-news-icon" aria-hidden="true"/>
       <div className="ps-news-text"><h2 id="ps-news-title">Stay in the Loop</h2><p>Get new drops and exclusive deals<br/>straight to your inbox.</p></div>
-      {done?<p className="ps-news-done" role="status">Thanks! Coming soon.</p>:
-        <form className="ps-news-form" onSubmit={e=>{e.preventDefault();setDone(true)}}>
-          <label className="ps-news-field"><Mail size={18} aria-hidden="true"/><input type="email" required placeholder="Enter your email address" aria-label="Email address" autoComplete="email"/></label>
-          <button className="ps-btn ps-btn-orange">Subscribe</button>
+      {done?<p className="ps-news-done" role="status">Thanks for subscribing! You&apos;ll hear from us about new drops soon.</p>:
+        <form className="ps-news-form" onSubmit={subscribe} noValidate>
+          <div className="ps-news-col">
+            <label className="ps-news-field"><Mail size={18} aria-hidden="true"/><input type="email" required placeholder="Enter your email address" aria-label="Email address" autoComplete="email" maxLength={254}
+              value={email} onChange={e=>{setEmail(e.target.value);setError('')}} aria-invalid={!!error} aria-describedby={error?'ps-news-error':undefined}/></label>
+            {error&&<p id="ps-news-error" className="ps-news-error" role="alert">{error}</p>}
+          </div>
+          <button type="submit" className="ps-btn ps-btn-orange">Subscribe</button>
         </form>}
     </div>
   </section>;

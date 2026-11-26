@@ -10,15 +10,21 @@
 
 /* ---- Category hero ---- */
 /* Both banners sit inside .pl-wrap (same width as filters + grid), rounded, and share one size:
-   4.5:1 from 768px up, 3:1 below. The banner images are 3:1 with their text drawn in.
-   - Image banner, >= 768px: cover + center. That trims 1/6 of the image height at the top and at the bottom;
-     the drawn text sits between 23% and 71% of the height, so it is never cropped.
-   - Image banner, < 768px: contain, so the whole 3:1 image shows (no cropping at all).
-   - Code banner: same ratio, but it grows taller when its text needs more room (see below). */
+   4.5:1 from 768px up, 3:1 below. Both are code banners with text on the left: with a text-free image as the
+   background (.has-img) or the purple art. The box grows taller when its text needs more room (see below). */
 :root{--pl-hero-ratio:4.5/1}
-.pl-hero,.pl-hero-banner{aspect-ratio:var(--pl-hero-ratio);margin-top:20px;border-radius:var(--ps-radius);background:linear-gradient(100deg,#5B21B6 0%,var(--ps-purple) 52%,#7C3AED 100%)}
-.pl-hero-banner{display:block;overflow:hidden;line-height:0}
-.pl-hero-banner img{display:block;width:100%;height:100%;object-fit:cover;object-position:center}
+.pl-hero{aspect-ratio:var(--pl-hero-ratio);margin-top:20px;border-radius:var(--ps-radius);background:linear-gradient(100deg,#5B21B6 0%,var(--ps-purple) 52%,#7C3AED 100%)}
+/* Image background (public/categories/<slug>.png, text-free, art on the right): cover, right-aligned, with a purple
+   gradient on the left so the white text stays readable. The text itself is real HTML (.pl-hero-inner). */
+.pl-hero.has-img{background:linear-gradient(90deg,#5E02C4 0%,#6303CF 100%)}
+/* Never cropped: the image is as tall as the box (width follows its own ratio) and sits on the right edge. The box
+   color is the image's left-edge purple (sampled), and the image fades in over its first 15% so there is no seam. */
+.pl-hero-bg{position:absolute;top:0;right:0;display:block;height:100%;width:auto;max-width:none;object-fit:contain;object-position:right center;-webkit-mask-image:linear-gradient(90deg,transparent 0,#000 15%);mask-image:linear-gradient(90deg,transparent 0,#000 15%)}
+/* a soft darker purple behind the text (fades out before the art) */
+.pl-hero-shade{position:absolute;inset:0;background:linear-gradient(90deg,rgba(60,8,140,.55) 0%,rgba(60,8,140,.35) 35%,rgba(60,8,140,0) 58%)}
+/* Collection banner: the image's own proportions, centered, never cropped */
+.pl-collection-banner{margin-top:20px;display:flex;justify-content:center}
+.pl-collection-banner img{display:block;width:100%;max-width:780px;height:auto;border-radius:var(--ps-radius)}
 /* Code banner: the box itself does not clip (overflow visible), so with aspect-ratio its height can grow to fit
    the text instead of cutting it off. The artwork layer clips itself to the rounded box. */
 .pl-hero{position:relative;display:flex;align-items:center;color:#fff}
@@ -154,7 +160,7 @@ a.pl-pagelink:hover{border-color:var(--ps-purple);color:var(--ps-purple)}
 /* ---- Mobile (< 900px): filters slide in from the left ---- */
 @media(max-width:899px){
   .pl-wrap{padding:0 16px}
-  .pl-hero,.pl-hero-banner{margin-top:16px}
+  .pl-hero{margin-top:16px}
   .pl-hero-inner{padding:18px 24px}
   .pl-hero h1{font-size:30px;letter-spacing:-.6px}
   /* the line wraps on phones, so use spacing instead of "|" (a separator could start the second line) */
@@ -185,8 +191,14 @@ a.pl-pagelink:hover{border-color:var(--ps-purple);color:var(--ps-purple)}
 /* ---- Phones (< 768px): banner 3:1, the whole image (no cropping) ---- */
 @media(max-width:767px){
   :root{--pl-hero-ratio:3/1}
-  .pl-hero-banner img{object-fit:contain}
   .pl-hero-art{opacity:.55}
+  .pl-hero.has-img .pl-hero-art{opacity:1}
+  /* phones: the text covers most of the width, so the shade reaches further and the text is a bit tighter to fit 3:1 */
+  .pl-hero-shade{background:linear-gradient(90deg,rgba(55,6,130,.95) 0%,rgba(55,6,130,.85) 50%,rgba(55,6,130,.4) 78%,rgba(55,6,130,.1) 100%)}
+  .pl-hero.has-img .pl-hero-inner{padding:10px 16px}
+  .pl-hero.has-img h1{font-size:20px;margin:0 0 2px}
+  .pl-hero.has-img .pl-hero-text{font-size:11.5px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+  .pl-hero.has-img .pl-hero-trust{margin-top:6px;gap:2px 10px;font-size:10px}
   .pl-hero-inner{padding:14px 16px}
   .pl-hero-label{font-size:10px}
   .pl-hero h1{margin:0 0 4px;font-size:22px}

@@ -75,10 +75,10 @@ export function getNiches(slug:string) {
 
 // minOrders: only designs ordered at least this many times (used for Bestsellers)
 // sizes / colors: designs available in ANY of these size codes / color names (sent comma separated)
-export type DesignParams = {categorySlug?:string; search?:string; priceMin?:string; priceMax?:string; productType?:string; sort?:string; minOrders?:number; sizes?:string[]; colors?:string[]; limit?:number; offset?:number};
+export type DesignParams = {categorySlug?:string; search?:string; priceMin?:string; priceMax?:string; productType?:string; sort?:string; minOrders?:number; sizes?:string[]; colors?:string[]; terms?:string[]; limit?:number; offset?:number};
 
 // Query string for the filters shared by GET /designs and GET /designs/facets
-function designFilterQuery({categorySlug, search, priceMin, priceMax, productType, minOrders, sizes, colors}:DesignParams) {
+function designFilterQuery({categorySlug, search, priceMin, priceMax, productType, minOrders, sizes, colors, terms}:DesignParams) {
   const q = new URLSearchParams();
   if (minOrders) q.set('min_orders', String(minOrders));
   if (categorySlug) q.set('category_slug', categorySlug);
@@ -88,6 +88,7 @@ function designFilterQuery({categorySlug, search, priceMin, priceMax, productTyp
   if (productType) q.set('product_type', productType);
   if (sizes && sizes.length) q.set('sizes', sizes.join(','));
   if (colors && colors.length) q.set('colors', colors.join(','));
+  if (terms && terms.length) q.set('terms', terms.join(','));
   return q;
 }
 
@@ -122,7 +123,8 @@ export function getDesign(code:string) {
   return get<ApiDesign>('/designs/' + encodeURIComponent(code));
 }
 
-export type ApiVariant = {product_variant_id:number; sku:string; color_name:string; color_hex:string|null; size_code:string; size_name:string; customer_price:string|number};
+// in_stock: false when the variant has inventory rows and none left (print-on-demand variants are always in stock)
+export type ApiVariant = {product_variant_id:number; sku:string; color_name:string; color_hex:string|null; size_code:string; size_name:string; customer_price:string|number; in_stock?:boolean};
 
 export function getVariants(productId:number) {
   return get<{product:ApiProduct; variants:ApiVariant[]}>('/products/' + productId + '/variants');
@@ -200,6 +202,13 @@ export type ApiShippingMethod = {code:string; name:string; price:number; min_day
 
 export function getShippingMethods() {
   return get<ApiShippingMethod[]>('/shipping-methods');
+}
+
+// GET /cart/{token}/quote: the server's order summary for the cart page (same rules as checkout, nothing saved, no address)
+export type ApiCartQuote = ApiTotalsBase & {shipping_method_code:string; free_over:string|number|null; estimated_delivery_start:string|null; estimated_delivery_end:string|null};
+type ApiTotalsBase = {subtotal:string|number; discount_total:string|number; discount_name:string|null; shipping_amount:string|number; tax_total:string|number; total:string|number};
+export function getCartQuote(token:string, shippingMethod = 'standard') {
+  return get<ApiCartQuote>('/cart/' + encodeURIComponent(token) + '/quote?shipping_method_code=' + encodeURIComponent(shippingMethod));
 }
 
 // Fields shown for an item on the payment and tracking pages (quote and order items both have them)

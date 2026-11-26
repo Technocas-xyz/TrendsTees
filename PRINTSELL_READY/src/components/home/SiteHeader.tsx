@@ -4,7 +4,8 @@ import Link from 'next/link';
 import {useRouter,usePathname} from 'next/navigation';
 import {ChevronDown,Heart,Menu,Palette,Search,Shirt,ShoppingCart,Tag,Truck,UserRound,X} from 'lucide-react';
 import {getInterests,getMe,logoutCustomer,type ApiInterest} from '@/lib/api';
-import {COLLECTIONS,FREE_SHIPPING_LABEL,PROMO_CODE,PROMO_TEXT,SHOW_PROMO_BANNER} from '@/lib/config';
+import {COLLECTIONS,FREE_SHIPPING_LABEL,PROMO_CODE,PROMO_TEXT,SHOW_PROMO_BANNER,collectionHref,productTypeHref} from '@/lib/config';
+import {useProductTypes} from './useProductTypes';
 import {Logo} from './Logo';
 
 export type StoreUser={name:string;email:string}|null;
@@ -47,7 +48,7 @@ function AccountMenu({initial}:{initial?:StoreUser}){
     {open&&<div className="ps-acct-menu" role="menu">
       <Link role="menuitem" href="/account" onClick={()=>setOpen(false)}>Dashboard</Link>
       <Link role="menuitem" href="/account/orders" onClick={()=>setOpen(false)}>My Orders</Link>
-      <Link role="menuitem" href="/account/wishlist" onClick={()=>setOpen(false)}>Wishlist</Link>
+      <Link role="menuitem" href="/wishlist" onClick={()=>setOpen(false)}>Wishlist</Link>
       <div className="ps-acct-divider" role="separator"/>
       <button type="button" role="menuitem" className="ps-acct-signout" onClick={signOut}>Sign out</button>
     </div>}
@@ -88,6 +89,9 @@ export function SiteHeader({count,user}:{count:number;user?:StoreUser}){
   function loadInterests(){if(asked.current)return;asked.current=true;getInterests().then(setInterests).catch(()=>{asked.current=false;setInterests([])})}
   const close=()=>setMenu(false);
   const shopAll:[string,string][]|null=interests&&[['All Designs','/designs'],...interests.map(i=>[i.category_name,'/designs?category='+encodeURIComponent(i.category_slug)] as [string,string])];
+  // Graphic Tees: only product types that have an active product
+  const types=useProductTypes();
+  const tees:[string,string][]|null=types&&[['All Graphic Tees','/designs'],...types.map(t=>[t.label,productTypeHref(t.slug)] as [string,string])];
   return <>
     <TopBar/>
     <header className="ps-header">
@@ -109,8 +113,8 @@ export function SiteHeader({count,user}:{count:number;user?:StoreUser}){
       </div>
       <nav id="ps-nav" className={'ps-nav'+(menu?' open':'')} aria-label="Main">
         <NavDropdown label="Shop All" purple wide items={shopAll} onOpen={loadInterests} onNavigate={close}/>
-        <NavDropdown label="Graphic Tees" items={[['All Graphic Tees','/designs'],['T-Shirts','/designs?product=tshirt'],['Hoodies','/designs?product=hoodie']]} onNavigate={close}/>
-        <NavDropdown label="Collections" items={[...COLLECTIONS.map(c=>[c.name,'/designs?category='+c.category] as [string,string]),['All Collections','/#collections']]} onNavigate={close}/>
+        <NavDropdown label="Graphic Tees" items={tees} onNavigate={close}/>
+        <NavDropdown label="Collections" items={[...COLLECTIONS.map(c=>[c.name,collectionHref(c)] as [string,string]),['All Collections','/#collections']]} onNavigate={close}/>
         <Link className="ps-nav-link" href="/designs?sort=newest" onClick={close}>New Arrivals</Link>
         <Link className="ps-nav-link" href="/designs?sort=popular" onClick={close}>Bestsellers</Link>
         <Link className="ps-nav-link orange" href="/designs?sort=price_asc" onClick={close}>Sale</Link>

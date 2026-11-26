@@ -128,23 +128,30 @@ def get_product_variants(product_id: int):
                 if product is None:
                     raise HTTPException(status_code=404, detail="Product not found")
 
-                # Step 2: get the active variants for this product
+                # Step 2: get the active variants for this product.
+                # in_stock uses the same rule as the listing filters: a variant with inventory_stock rows needs
+                # sum(on_hand - reserved) > 0; a variant without inventory rows is print on demand (always in stock).
                 cursor.execute(
                     """
                     SELECT
-                        product_variant_id,
-                        sku,
-                        color_name,
-                        color_hex,
-                        size_code,
-                        size_name,
-                        customer_price
-                    FROM product_variants
-                    WHERE product_id = %s AND variant_status = 'active'
+                        pv.product_variant_id,
+                        pv.sku,
+                        pv.color_name,
+                        pv.color_hex,
+                        pv.size_code,
+                        pv.size_name,
+                        pv.customer_price,
+                        COALESCE((
+                            SELECT SUM(s.quantity_on_hand - s.quantity_reserved)
+                            FROM inventory_stock s
+                            WHERE s.product_variant_id = pv.product_variant_id
+                        ), 1) > 0 AS in_stock
+                    FROM product_variants pv
+                    WHERE pv.product_id = %s AND pv.variant_status = 'active'
                     ORDER BY
-                        color_name,
-                        array_position(ARRAY['XS','S','M','L','XL','2XL','3XL']::text[], size_code::text),
-                        size_code
+                        pv.color_name,
+                        array_position(ARRAY['XS','S','M','L','XL','2XL','3XL']::text[], pv.size_code::text),
+                        pv.size_code
                     """,
                     (product_id,),
                 )
@@ -363,6 +370,16 @@ base AS (
            OR lower(c.category_slug) = lower(%(slug)s)
            OR lower(pc.category_slug) = lower(%(slug)s))
       AND (%(search)s::text IS NULL OR d.title ILIKE %(search)s)
+      -- terms (collections): the title or one of the design's tags contains ANY of the words
+      AND (%(terms)s::text[] IS NULL
+           OR d.title ILIKE ANY(%(terms)s::text[])
+           OR EXISTS (
+                SELECT 1
+                FROM design_tags dt
+                JOIN tags t ON t.tag_id = dt.tag_id
+                WHERE dt.design_id = d.design_id
+                  AND t.tag_name ILIKE ANY(%(terms)s::text[])
+           ))
       AND (%(product_type)s::text IS NULL OR EXISTS (
             -- enabled for an active product of this type
             SELECT 1
@@ -419,9 +436,32 @@ def parse_filter_list(raw: str | None, name: str, max_length: int, upper: bool) 
     return values or None
 
 
-def design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors) -> dict:
+MAX_TERMS = 10
+
+
+def parse_terms(raw: str | None) -> list[str] | None:
+    """Comma separated words -> escaped "%word%" ILIKE patterns (None = no filter). Used by collections."""
+    if not raw:
+        return None
+    patterns: list[str] = []
+    for part in raw.split(","):
+        word = part.strip().lower()
+        if not word:
+            continue
+        if len(word) > 40:
+            raise HTTPException(status_code=422, detail="terms: each word can be at most 40 characters")
+        pattern = like_pattern(word)
+        if pattern not in patterns:
+            patterns.append(pattern)
+    if len(patterns) > MAX_TERMS:
+        raise HTTPException(status_code=422, detail=f"terms: at most {MAX_TERMS} words")
+    return patterns or None
+
+
+def design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors, terms=None) -> dict:
     """Named parameters for DESIGNS_BASE_SQL + DESIGNS_FILTER_SQL. Empty strings mean "no filter"."""
     return {
+        "terms": parse_terms(terms),
         "slug": category_slug or None,
         # ILIKE pattern built here and passed as a parameter
         "search": f"%{search}%" if search else None,
@@ -445,12 +485,13 @@ def get_designs(
     min_orders: int = Query(default=0, ge=0),
     sizes: str | None = Query(default=None, max_length=500, description='Comma separated size codes, e.g. "XS,M"'),
     colors: str | None = Query(default=None, max_length=1000, description='Comma separated color names, e.g. "Black,Navy"'),
+    terms: str | None = Query(default=None, max_length=400, description='Comma separated words; title or a tag contains any of them (collections)'),
     sort: Literal["newest", "price_asc", "price_desc", "popular"] = "newest",
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ):
     # The same filter values are used by the list query and the total query
-    params = design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors)
+    params = design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors, terms)
 
     try:
         with get_connection() as conn:
@@ -529,10 +570,11 @@ def get_design_facets(
     min_orders: int = Query(default=0, ge=0),
     sizes: str | None = Query(default=None, max_length=500),
     colors: str | None = Query(default=None, max_length=1000),
+    terms: str | None = Query(default=None, max_length=400),
 ):
     # Counts for the listing sidebar. Same filters as GET /designs; each facet ignores its own
     # filter and applies all the others, so choosing "M" still shows the counts of the other sizes.
-    params = design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors)
+    params = design_filter_params(category_slug, search, price_min, price_max, product_type, min_orders, sizes, colors, terms)
 
     def without(*keys):
         return {**params, **{k: None for k in keys}}
@@ -1277,6 +1319,45 @@ def calculate_quote(cursor, cart_id, shipping_method_code):
 def get_shipping_methods():
     # Static list for now
     return list(SHIPPING_METHODS.values())
+
+
+@app.get("/cart/{cart_token}/quote")
+def get_cart_quote(cart_token: uuid.UUID, shipping_method_code: Literal["standard", "express"] = "standard"):
+    # Order summary for the cart page: the same calculate_quote() that POST /checkout uses (discounts,
+    # free shipping over the threshold, tax, delivery window), but read-only: nothing is saved and no
+    # address is needed. The final, binding quote is still made by POST /checkout.
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT cart_id FROM carts WHERE guest_cart_token = %s AND cart_status = 'active'",
+                    (cart_token,),
+                )
+                cart = cursor.fetchone()
+                if cart is None:
+                    raise HTTPException(status_code=404, detail="Cart not found")
+
+                quote = calculate_quote(cursor, cart["cart_id"], shipping_method_code)
+                method = SHIPPING_METHODS[shipping_method_code]
+                return {
+                    "shipping_method_code": shipping_method_code,
+                    "free_over": method["free_over"],
+                    "subtotal": quote["subtotal"],
+                    "discount_total": quote["discount_total"],
+                    "discount_name": quote["discount_name"],
+                    "shipping_amount": quote["shipping_amount"],
+                    "tax_total": quote["tax_total"],
+                    "total": quote["total"],
+                    "estimated_delivery_start": quote["estimated_delivery_start"],
+                    "estimated_delivery_end": quote["estimated_delivery_end"],
+                }
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
 
 
 @app.post("/checkout")
