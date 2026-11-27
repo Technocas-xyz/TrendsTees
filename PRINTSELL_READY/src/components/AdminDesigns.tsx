@@ -11,7 +11,7 @@ import {
   replaceDesignImage,setDesignStatus,bulkDesignStatus,
   type ApiMe,type ApiAdminCategory,type ApiAdminDesign,type ApiAdminDesignRow,
 } from '@/lib/api';
-import {can,errMsg,when,label,sessionEnded,useLoad,LoadState,Thumb} from './AdminPanels';
+import {can,errMsg,when,label,sessionEnded,useLoad,LoadState,Thumb,AdminPager,RowMenu} from './AdminPanels';
 
 const PER_PAGE=24;
 const MAX_IMAGE=15*1024*1024;
@@ -133,10 +133,10 @@ function DesignsList({me}:{me:ApiMe}){
           <td>{d.enabled_products}</td><td>{d.times_ordered}</td><td>{new Date(d.created_at).toLocaleDateString()}</td>
           <td><div className="adm-rowactions">
             <Link className="adm-light" href={'/admin/designs/'+code}>{manage?<><Pencil size={14}/> Edit</>:'View'}</Link>
-            {manage&&moves.map(m=><button key={m} className="adm-light" disabled={busy===code} onClick={()=>changeOne(d,m)}>{MOVE_LABEL[m]}</button>)}
+            {manage&&<RowMenu name={d.title} disabled={busy===code} items={moves.map(m=>({label:MOVE_LABEL[m],danger:m==='archived',onClick:()=>changeOne(d,m)}))}/>}
           </div></td></tr>})}
       </tbody></table></div>}
-      {pages>1&&<div className="adm-table-footer"><span>Page {page} of {pages}</span><div><button disabled={page<=1} onClick={()=>setParams({page:String(page-1)})} aria-label="Previous page"><ChevronLeft size={16}/></button><b>{page}</b><button disabled={page>=pages} onClick={()=>setParams({page:String(page+1)})} aria-label="Next page"><ChevronRight size={16}/></button></div></div>}
+      {pages>1&&<div className="adm-table-footer"><span>Page {page} of {pages}</span><AdminPager page={page} pages={pages} onPage={n=>setParams({page:String(n)})}/></div>}
     </>}
   </section>;
 }

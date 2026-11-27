@@ -1,4 +1,4 @@
-# PRINT&SELL accounts (local development MVP)
+# PrintSteez accounts (local development MVP)
 
 ## Run
 Open the `PRINTSELL_READY` folder, the one containing this `package.json`:

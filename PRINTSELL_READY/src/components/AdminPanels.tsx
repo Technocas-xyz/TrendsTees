@@ -3,7 +3,8 @@
 // The backend checks every permission; the checks here only decide what is shown.
 import {useEffect,useState} from 'react';
 import Link from 'next/link';
-import {ArrowLeft,ArrowRight,ChevronLeft,ChevronRight,Search,X,Plus,Pencil,Trash2,ShoppingBag,Package,Shirt,Users,BarChart3,Clock} from 'lucide-react';
+import {ArrowLeft,ArrowRight,ChevronLeft,ChevronRight,Search,X,Plus,Pencil,Trash2,ShoppingBag,Package,Shirt,Users,BarChart3,Clock,Ellipsis} from 'lucide-react';
+import {pageItems} from './listing/Pagination';
 import {
   ApiError,imageUrl,
   getAdminStats,getAdminOrders,getAdminOrder,changeOrderStatus,markOrderPaid,
@@ -54,39 +55,35 @@ function Modal({title,onClose,children}:{title:string;onClose:()=>void;children:
   </div>;
 }
 
-export function Thumb({url,title}:{url:string|null;title:string}){
-  return <div className="adm-thumb">{url?<img src={imageUrl(url)!} alt={title}/>:<Shirt size={20}/>}</div>;
+// Page numbers like the storefront: 1 2 3 … 16 with previous / next
+export function AdminPager({page,pages,onPage}:{page:number;pages:number;onPage:(n:number)=>void}){
+  if(pages<=1)return null;
+  return <nav className="adm-pager" aria-label="Pages">
+    <button type="button" disabled={page<=1} onClick={()=>onPage(page-1)} aria-label="Previous page"><ChevronLeft size={16}/></button>
+    {pageItems(page,pages).map((n,i)=>n==='gap'?<span key={'g'+i} className="gap" aria-hidden="true">…</span>:<button type="button" key={n} className={n===page?'on':''} onClick={()=>onPage(n)} aria-label={'Page '+n} aria-current={n===page?'page':undefined}>{n}</button>)}
+    <button type="button" disabled={page>=pages} onClick={()=>onPage(page+1)} aria-label="Next page"><ChevronRight size={16}/></button>
+  </nav>;
 }
 
-// ---------------------------------------------------------------- Dashboard
-
-export function DashboardPanel(){
-  const a=useLoad(getAdminStats,'stats');
-  if(!a.data)return <LoadState error={a.error} retry={a.retry}/>;
-  const s=a.data;
-  const cards:[string,string|number,string,React.ReactNode][]=[
-    ['Orders today',s.orders_today,'blue',<Clock key="a"/>],
-    ['Total orders',s.orders_total,'purple',<ShoppingBag key="b"/>],
-    ...(s.revenue_total!==null?[['Revenue',money(s.revenue_total),'green',<BarChart3 key="c"/>] as [string,string,string,React.ReactNode]]:[]),
-    ['Published designs',s.designs_published,'amber',<Package key="d"/>],
-    ['Customers',s.customers_total,'red',<Users key="e"/>],
-  ];
-  const statuses=Object.entries(s.orders_by_status);
-  const max=Math.max(1,...statuses.map(([,n])=>n));
+// "..." menu for the less common row actions. It is positioned with fixed coordinates so a scrolling table does not clip it.
+export function RowMenu({items,disabled,name}:{items:{label:string;danger?:boolean;onClick:()=>void}[];disabled?:boolean;name:string}){
+  const [pos,setPos]=useState<{x:number;y:number}|null>(null);
+  useEffect(()=>{
+    if(!pos)return;
+    const close=()=>setPos(null),key=(e:KeyboardEvent)=>{if(e.key==='Escape')close()};
+    const down=(e:MouseEvent)=>{if(!(e.target as HTMLElement).closest('.adm-menu,.adm-more'))close()};
+    document.addEventListener('mousedown',down);document.addEventListener('keydown',key);window.addEventListener('scroll',close,true);window.addEventListener('resize',close);
+    return()=>{document.removeEventListener('mousedown',down);document.removeEventListener('keydown',key);window.removeEventListener('scroll',close,true);window.removeEventListener('resize',close)};
+  },[pos]);
+  if(items.length===0)return null;
   return <>
-    <div className="adm-stats">{cards.map(([name,value,color,icon])=><div className="adm-stat" key={name}><div className={'adm-stat-icon '+color}>{icon}</div><div><small>{name}</small><strong>{value}</strong></div></div>)}</div>
-    <div className="adm-dashgrid">
-      <section className="adm-panel"><h2>Recent orders</h2>
-        {s.recent_orders.length===0?<p className="adm-muted">No orders yet.</p>:<div className="adm-scroll"><table className="adm-table"><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Total</th><th>Status</th></tr></thead><tbody>
-          {s.recent_orders.map(o=><tr key={o.order_public_code}><td><b>{o.order_public_code}</b></td><td>{o.customer}</td><td>{when(o.placed_at)}</td><td>{money(o.order_total)}</td><td><StatusPill status={o.order_status}/></td></tr>)}
-        </tbody></table></div>}
-        <Link href="/admin/orders" className="adm-link">View all orders <ArrowRight size={15}/></Link>
-      </section>
-      <section className="adm-panel"><h2>Orders by status</h2>
-        {statuses.map(([status,n])=><div className="adm-progressrow" key={status}><div><b>{label(status)}</b><span>{n}</span></div><div><span style={{width:(n/max*100)+'%'}}/></div></div>)}
-      </section>
-    </div>
+    <button type="button" className="adm-light adm-more" disabled={disabled} aria-haspopup="menu" aria-expanded={!!pos} aria-label={'More actions for '+name} onClick={e=>{const r=e.currentTarget.getBoundingClientRect();setPos(pos?null:{x:Math.max(8,Math.min(window.innerWidth-168,r.right-160)),y:r.bottom+4})}}><Ellipsis size={16}/></button>
+    {pos&&<div className="adm-menu" role="menu" style={{left:pos.x,top:pos.y}}>{items.map(i=><button type="button" role="menuitem" key={i.label} className={i.danger?'danger':''} onClick={()=>{setPos(null);i.onClick()}}>{i.label}</button>)}</div>}
   </>;
+}
+
+export function Thumb({url,title}:{url:string|null;title:string}){
+  return <div className="adm-thumb">{url?<img src={imageUrl(url)!} alt={title}/>:<Shirt size={20}/>}</div>;
 }
 
 // ---------------------------------------------------------------- Orders
@@ -97,7 +94,7 @@ const MOVES:Record<string,string[]>={payment_pending:['confirmed','cancelled'],c
 const PER_PAGE=20;
 
 export function OrdersPanel({me}:{me:ApiMe}){
-  const [code,setCode]=useState(''),[status,setStatus]=useState(''),[search,setSearch]=useState(''),[page,setPage]=useState(1);
+  const [code,setCode]=useState(()=>typeof window==='undefined'?'':new URLSearchParams(window.location.search).get('order')||''),[status,setStatus]=useState(''),[search,setSearch]=useState(''),[page,setPage]=useState(1);
   if(code)return <OrderDetail me={me} code={code} onBack={()=>setCode('')}/>;
   return <OrdersList status={status} setStatus={setStatus} search={search} setSearch={setSearch} page={page} setPage={setPage} onOpen={setCode}/>;
 }
@@ -118,7 +115,7 @@ function OrdersList({status,setStatus,search,setSearch,page,setPage,onOpen}:{sta
       {a.data.items.length===0?<div className="adm-empty">No orders match these filters.</div>:<div className="adm-scroll"><table className="adm-table"><thead><tr><th>Order</th><th>Date</th><th>Customer</th><th>Items</th><th>Total</th><th>Payment</th><th>Status</th><th></th></tr></thead><tbody>
         {a.data.items.map(o=><tr key={o.order_public_code}><td><b>{o.order_public_code}</b></td><td>{when(o.placed_at)}</td><td>{o.customer_name||o.contact_email}</td><td>{o.item_count}</td><td>{money(o.order_total)}</td><td><StatusPill status={o.payment_status}/></td><td><StatusPill status={o.order_status}/></td><td><button className="adm-light" onClick={()=>onOpen(o.order_public_code)}>View</button></td></tr>)}
       </tbody></table></div>}
-      {pages>1&&<div className="adm-table-footer"><span>Page {page} of {pages}</span><div><button disabled={page<=1} onClick={()=>setPage(page-1)} aria-label="Previous page"><ChevronLeft size={16}/></button><b>{page}</b><button disabled={page>=pages} onClick={()=>setPage(page+1)} aria-label="Next page"><ChevronRight size={16}/></button></div></div>}
+      {pages>1&&<div className="adm-table-footer"><span>Page {page} of {pages}</span><AdminPager page={page} pages={pages} onPage={setPage}/></div>}
     </>}
   </section>;
 }
@@ -237,7 +234,7 @@ function UsersTab({me}:{me:ApiMe}){
     {error&&<div className="adm-error" style={{marginTop:14}}>{error}</div>}
     {!users.data?<LoadState error={users.error} retry={users.retry}/>:users.data.length===0?<div className="adm-empty">No users found.</div>:<div className="adm-scroll" style={{marginTop:16}}><table className="adm-table"><thead><tr><th>Name</th><th>Email</th><th>Roles</th><th>Status</th><th>Last login</th>{manage&&<th></th>}</tr></thead><tbody>
       {users.data.map(u=><tr key={u.user_id}><td><b>{u.full_name}</b></td><td>{u.email}</td><td>{u.roles.length?u.roles.map(r=><span key={r.role_code} className="adm-pill purple" style={{marginRight:4}}>{r.role_name}</span>):<span className="adm-muted">None</span>}</td><td><StatusPill status={u.account_status}/></td><td>{when(u.last_login_at)}</td>
-        {manage&&<td><div className="adm-rowactions"><button className="adm-light" onClick={()=>setModal(u)}><Pencil size={14}/> Roles</button>{u.account_status==='active'?<button className="adm-light" disabled={busyId===u.user_id} onClick={()=>toggle(u)}>Disable</button>:/^(suspended|disabled)$/.test(u.account_status)&&<button className="adm-light" disabled={busyId===u.user_id} onClick={()=>toggle(u)}>Enable</button>}</div></td>}
+        {manage&&<td><div className="adm-rowactions"><button className="adm-light" onClick={()=>setModal(u)}><Pencil size={14}/> Roles</button><RowMenu name={u.full_name} disabled={busyId===u.user_id} items={u.account_status==='active'?[{label:'Disable',danger:true,onClick:()=>toggle(u)}]:/^(suspended|disabled)$/.test(u.account_status)?[{label:'Enable',onClick:()=>toggle(u)}]:[]}/></div></td>}
       </tr>)}
     </tbody></table></div>}
     {modal==='add'&&<AddUserModal roles={givable} onClose={()=>setModal(null)} onSaved={u=>{users.setData(list=>list?[u,...list]:[u]);setModal(null)}}/>}
@@ -301,7 +298,7 @@ function RolesTab({me}:{me:ApiMe}){
         <td style={{whiteSpace:'normal',maxWidth:260}}>{r.description||'—'}</td>
         <td>{r.user_count}</td>
         <td style={{whiteSpace:'normal',maxWidth:340}}>{r.permissions.length===0?<span className="adm-muted">None</span>:<>{r.permissions.slice(0,5).map(p=><span key={p} className="adm-pill purple" style={{marginRight:4,display:'inline-block',marginBottom:4}}>{p}</span>)}{r.permissions.length>5&&<span className="adm-muted"> +{r.permissions.length-5} more</span>}</>}</td>
-        {superAdmin&&<td>{r.is_system?<span className="adm-muted">Read-only</span>:<div className="adm-rowactions"><button className="adm-light" onClick={()=>setModal(r)}><Pencil size={14}/> Edit</button><button className="adm-light" onClick={()=>remove(r)}><Trash2 size={14}/> Delete</button></div>}</td>}
+        {superAdmin&&<td>{r.is_system?<span className="adm-muted">Read-only</span>:<div className="adm-rowactions"><button className="adm-light" onClick={()=>setModal(r)}><Pencil size={14}/> Edit</button><RowMenu name={r.role_name} items={[{label:'Delete',danger:true,onClick:()=>remove(r)}]}/></div>}</td>}
       </tr>)}
     </tbody></table></div>}
     {modal&&<RoleFormModal role={modal==='new'?null:modal} onClose={()=>setModal(null)} onSaved={saved}/>}

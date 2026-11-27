@@ -1,3 +1,3 @@
 import {notFound} from 'next/navigation';import AccountDashboard from '@/components/AccountDashboard';
 // Who is signed in is checked in the browser (GET /auth/me), because the login cookie belongs to the API
-export default async function Page({params,searchParams}:{params:Promise<{section:string}>;searchParams:Promise<{order?:string|string[]}>}){const {section}=await params; if(!['orders','wishlist','addresses','profile','settings'].includes(section))notFound();const order=(await searchParams).order;return <AccountDashboard section={section} orderCode={Array.isArray(order)?order[0]:order||''}/>;}
+export default async function Page({params,searchParams}:{params:Promise<{section:string}>;searchParams:Promise<{order?:string|string[]}>}){const {section}=await params; if(!['orders','wishlist'].includes(section))notFound();const order=(await searchParams).order;return <AccountDashboard section={section} orderCode={Array.isArray(order)?order[0]:order||''}/>;}

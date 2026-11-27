@@ -1,4 +1,4 @@
-# PRINT&SELL — Integrated Customer + Admin Frontend
+# PrintSteez — Integrated Customer + Admin Frontend
 
 This is **one Next.js project** with a single `/login` page. Signed-in customers navigate to `/account`; authorized admins navigate to `/admin`. Public sign-up always creates customer accounts. `/admin-login` redirects to `/login`. The admin screens preserve the supplied purple-sidebar reference designs.
 

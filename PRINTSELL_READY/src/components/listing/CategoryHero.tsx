@@ -1,9 +1,9 @@
 import {Palette,PenTool,Shirt} from 'lucide-react';
 
-// A text-free banner background in public/categories/<slug>.png (art on the right). The text is drawn with code on the left.
+// A text-free banner background in public/categories/<slug>.webp (art on the right). The text is drawn with code on the left.
 export type CategoryImage={slug:string;src:string;width:number;height:number};
 
-// Collection page banner: public/collections/<slug>.png at its own proportions (its title is drawn in, so it is never
+// Collection page banner: public/collections/<slug>.webp at its own proportions (its title is drawn in, so it is never
 // cropped). These images are about 715px wide, so they are not stretched past ~780px. h1 + description for screen readers/SEO.
 export function CollectionBanner({name,description,image}:{name:string;description:string;image:string}){
   return <section className="pl-collection-banner" aria-labelledby="pl-hero-title">

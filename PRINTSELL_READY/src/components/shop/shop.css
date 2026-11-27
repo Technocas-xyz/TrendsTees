@@ -309,3 +309,56 @@
   .sh-co-next{width:100%}
 }
 @media(prefers-reduced-motion:reduce){.sh-freebar-track span,.sh-line{transition:none}}
+
+/* ---------- Track order ---------- */
+.sh-tr-card{max-width:560px;margin:8px auto 0;padding:34px 32px 30px;text-align:center}
+.sh-tr-icon{display:inline-grid;place-items:center;width:60px;height:60px;border-radius:50%;background:var(--ps-purple-soft);color:var(--ps-purple)}
+.sh-tr-card h1{margin:14px 0 4px;font-size:30px;font-weight:800;letter-spacing:-.7px}
+.sh-tr-form{display:flex;flex-direction:column;gap:16px;margin-top:22px;text-align:left}
+.sh-form-err{margin:0;padding:10px 12px;border:1px solid #FECACA;border-radius:9px;background:#FEF2F2;color:#B91C1C;font-size:13.5px}
+.sh-tr-btn{width:100%;height:50px;border-radius:10px;font-size:15.5px}
+.sh-tr-btn:disabled{opacity:.7;cursor:wait}
+.sh-tr-result{max-width:980px;margin:24px auto 0;display:flex;flex-direction:column;gap:16px}
+.sh-tr-head{display:grid;grid-template-columns:repeat(5,auto);justify-content:space-between;gap:16px;padding:18px 24px}
+.sh-tr-head small{display:block;margin-bottom:3px;font-size:12px;color:var(--ps-muted)}
+.sh-tr-head b{font-size:16px;word-break:break-all}
+.sh-tr-pill{display:inline-block;padding:4px 12px;border-radius:999px;background:var(--ps-purple-soft);color:var(--ps-purple);font-size:13px;font-weight:700}
+.sh-tr-pill.other{background:#FEF3C7;color:#92400E}
+.sh-tr-sec{padding:20px 24px}
+.sh-tr-sec h2{margin:0 0 14px;font-size:20px;font-weight:800;letter-spacing:-.3px}
+.sh-tl{list-style:none;display:grid;grid-template-columns:repeat(5,1fr);margin:6px 0 4px;padding:0}
+.sh-tl-step{position:relative;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;color:var(--ps-muted)}
+/* line to the previous step, behind the dots */
+.sh-tl-step+.sh-tl-step::before{content:'';position:absolute;top:17px;right:50%;width:100%;height:3px;background:var(--ps-border)}
+.sh-tl-step.done::before,.sh-tl-step.current::before{background:var(--ps-purple)}
+.sh-tl-dot{position:relative;z-index:1;display:grid;place-items:center;width:36px;height:36px;border-radius:50%;border:2px solid #D1D5DB;background:#fff;font-size:14px;font-weight:800;color:var(--ps-muted)}
+.sh-tl-step.done .sh-tl-dot{border-color:var(--ps-purple);background:var(--ps-purple);color:#fff}
+.sh-tl-step.current .sh-tl-dot{width:40px;height:40px;margin:-2px 0;border-color:var(--ps-orange);background:var(--ps-orange);color:#fff;box-shadow:0 0 0 5px rgba(249,115,22,.2)}
+.sh-tl-label{font-size:14px;font-weight:700}
+.sh-tl-step.done .sh-tl-label{color:var(--ps-text)}
+.sh-tl-step.current .sh-tl-label{color:var(--ps-orange-hover);font-weight:800}
+.sh-tl-step small{min-height:16px;font-size:12px}
+.sh-tr-ship{display:flex;align-items:center;gap:12px;margin-top:16px;padding:12px 14px;border-radius:10px;background:var(--ps-tile);font-size:14px}
+.sh-tr-ship>svg{flex:none;width:24px;height:24px;color:var(--ps-purple)}
+.sh-tr-ship div{display:flex;flex-wrap:wrap;gap:4px 24px}
+.sh-tr-ship a{color:var(--ps-purple);text-decoration:underline}
+.sh-tr-cols{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:16px;align-items:start}
+.sh-tr-side{display:flex;flex-direction:column;gap:16px}
+.sh-tr-items{margin-top:0}
+.sh-tr-items li:first-child{border-top:0}
+.sh-tr-addr{display:flex;gap:10px;margin:0;font-size:14.5px;line-height:1.55}
+.sh-tr-addr svg{flex:none;width:20px;height:20px;margin-top:2px;color:var(--ps-purple)}
+.sh-tr-after{display:flex;justify-content:center;gap:12px;flex-wrap:wrap;margin:24px 0 8px}
+@media(max-width:899px){
+  .sh-tr-card{padding:26px 18px 22px}
+  .sh-tr-card h1{font-size:25px}
+  .sh-tr-head{grid-template-columns:1fr 1fr;justify-content:stretch}
+  .sh-tr-sec{padding:16px}
+  .sh-tr-cols{grid-template-columns:1fr}
+  /* timeline goes vertical on phones */
+  .sh-tl{grid-template-columns:1fr;gap:0}
+  .sh-tl-step{flex-direction:row;align-items:center;justify-content:flex-start;gap:12px;padding:8px 0;text-align:left}
+  .sh-tl-step+.sh-tl-step::before{top:-22px;right:auto;left:17px;width:3px;height:30px}
+  .sh-tl-step small{margin-left:auto;min-height:0}
+  .sh-tl-step.current .sh-tl-dot{margin:0}
+}

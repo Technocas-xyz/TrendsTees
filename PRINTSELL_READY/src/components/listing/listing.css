@@ -14,7 +14,7 @@
    background (.has-img) or the purple art. The box grows taller when its text needs more room (see below). */
 :root{--pl-hero-ratio:4.5/1}
 .pl-hero{aspect-ratio:var(--pl-hero-ratio);margin-top:20px;border-radius:var(--ps-radius);background:linear-gradient(100deg,#5B21B6 0%,var(--ps-purple) 52%,#7C3AED 100%)}
-/* Image background (public/categories/<slug>.png, text-free, art on the right): cover, right-aligned, with a purple
+/* Image background (public/categories/<slug>.webp, text-free, art on the right): cover, right-aligned, with a purple
    gradient on the left so the white text stays readable. The text itself is real HTML (.pl-hero-inner). */
 .pl-hero.has-img{background:linear-gradient(90deg,#5E02C4 0%,#6303CF 100%)}
 /* Never cropped: the image is as tall as the box (width follows its own ratio) and sits on the right edge. The box
