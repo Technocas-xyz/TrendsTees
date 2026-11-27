@@ -1,6 +1,6 @@
-# PRINT&SELL + n8n Daily 100 Images
+# PrintSteez + n8n Daily 100 Images
 
-This folder is your **existing PRINT&SELL customer/admin project**, extended with an n8n workflow and a publicly viewable `/new-designs` gallery. Existing authentication and UI remain unchanged except that the New Arrivals navigation links to the new gallery.
+This folder is your **existing PrintSteez customer/admin project**, extended with an n8n workflow and a publicly viewable `/new-designs` gallery. Existing authentication and UI remain unchanged except that the New Arrivals navigation links to the new gallery.
 
 ## API
 

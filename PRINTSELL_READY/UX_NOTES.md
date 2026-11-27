@@ -1,4 +1,4 @@
-# PRINT&SELL — Usability and Motion Upgrade
+# PrintSteez — Usability and Motion Upgrade
 
 This package keeps the customer storefront, customer account dashboard, and protected admin dashboard together in **one Next.js project**. Customer `/signup` and admin `/admin-signup` remain distinct, with the admin invitation requirement unchanged.
 

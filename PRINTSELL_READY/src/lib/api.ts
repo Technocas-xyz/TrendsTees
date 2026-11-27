@@ -319,6 +319,20 @@ export type ApiAdminStats = {
   orders_by_status:Record<string,number>; designs_published:number; customers_total:number;
   recent_orders:{order_public_code:string; placed_at:string; customer:string; order_total:string|number; order_status:string}[];
 };
+export type ApiDashStat = {value:string|number; change_pct:number|null};
+export type ApiAdminDashboard = {
+  days:number;
+  stats:{revenue:ApiDashStat|null; orders:ApiDashStat; customers:ApiDashStat; designs:ApiDashStat&{new_in_period:number}};
+  series:{day:string; revenue:string|number|null; orders:number; customers:number}[];
+  orders_by_status:Record<string,number>;
+  recent_orders:{order_public_code:string; placed_at:string; order_total:string|number; order_status:string; customer:string; title:string|null; preview_url:string|null; size_code:string|null; color_name:string|null; item_count:number}[];
+  top_products:{design_id:number; title:string|null; preview_url:string|null; units:number; revenue:string|number|null}[];
+  activity:{text:string; at:string; kind:string}[];
+  inventory:{has_inventory:boolean; threshold:number; low_stock:{product_name:string; color_name:string|null; size_code:string|null; available:number}[]};
+};
+export function getAdminDashboard(days:number) {
+  return request<ApiAdminDashboard>('GET', '/admin/dashboard?days=' + days, undefined, true);
+}
 export function getAdminStats() {
   return request<ApiAdminStats>('GET', '/admin/stats', undefined, true);
 }

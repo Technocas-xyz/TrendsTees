@@ -1548,7 +1548,7 @@ def place_order(checkout_session_id: int, body: PlaceOrderBody, request: Request
                     alphabet = string.ascii_uppercase + string.digits
                     order = None
                     for _ in range(10):
-                        code = "TT-" + "".join(secrets.choice(alphabet) for _ in range(8))
+                        code = "PS-" + "".join(secrets.choice(alphabet) for _ in range(8))
                         cursor.execute(
                             """
                             INSERT INTO orders
@@ -1557,7 +1557,7 @@ def place_order(checkout_session_id: int, body: PlaceOrderBody, request: Request
                                  order_total, order_status, payment_status,
                                  applied_discount_rule_id, applied_discount_type)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                    'payment_pending', 'unpaid', %s, %s)
+                                    'confirmed', 'paid', %s, %s)
                             ON CONFLICT (order_public_code) DO NOTHING
                             RETURNING order_id
                             """,
@@ -1637,24 +1637,26 @@ def place_order(checkout_session_id: int, body: PlaceOrderBody, request: Request
                         ),
                     )
 
-                    # Step 8: demo payment record (waiting for payment)
+                    # Step 8: demo payment record. The demo payment always succeeds, so the charge is
+                    # successful, the order is paid and its status is confirmed.
                     cursor.execute(
                         """
                         INSERT INTO payments
                             (order_id, action_type, provider_code, currency_code,
-                             amount, payment_status)
-                        VALUES (%s, 'charge', 'demo', 'USD', %s, 'pending')
+                             amount, payment_status, processed_at)
+                        VALUES (%s, 'charge', 'demo', 'USD', %s, 'successful', now())
                         """,
                         (order_id, quote["total"]),
                     )
 
-                    # Step 9: first status history entry
+                    # Step 9: status history: order placed, then payment received (confirmed)
                     cursor.execute(
                         """
                         INSERT INTO order_status_history (order_id, status_code, status_message)
-                        VALUES (%s, 'payment_pending', 'Order placed. Waiting for payment.')
+                        VALUES (%s, 'payment_pending', 'Order placed.'),
+                               (%s, 'confirmed', 'Payment received. Your order is confirmed.')
                         """,
-                        (order_id,),
+                        (order_id, order_id),
                     )
 
                     # Step 10: close the checkout session and convert the cart
@@ -2573,6 +2575,236 @@ def get_admin_stats(request: Request):
                     "designs_published": designs_published,
                     "customers_total": customers_total,
                     "recent_orders": recent_orders,
+                }
+
+    except psycopg.Error as e:
+        print("DATABASE ERROR:", repr(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection or query failed"
+        )
+
+
+LOW_STOCK_THRESHOLD = 25
+
+
+def pct_change(current, previous):
+    # % change against the previous period; None when there is nothing to compare with
+    if not previous:
+        return None
+    return round((float(current) - float(previous)) / float(previous) * 100, 1)
+
+
+@app.get("/admin/dashboard")
+def get_admin_dashboard(request: Request, days: int = Query(30)):
+    # Read-only numbers for the admin dashboard: the last `days` days against the `days` before them
+    if days not in (7, 30, 90):
+        raise HTTPException(status_code=422, detail="days must be 7, 30 or 90")
+    try:
+        admin = require_permission(request, "dashboard.view")
+        show_money = "finance.view" in admin["permissions"]
+
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Cancelled and refunded orders do not count as revenue
+                cursor.execute(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (WHERE placed_at >= now() - make_interval(days => %(d)s)) AS orders_now,
+                        COUNT(*) FILTER (WHERE placed_at <  now() - make_interval(days => %(d)s)) AS orders_prev,
+                        COALESCE(SUM(order_total) FILTER (
+                            WHERE placed_at >= now() - make_interval(days => %(d)s)
+                              AND order_status NOT IN ('cancelled','refunded')), 0) AS revenue_now,
+                        COALESCE(SUM(order_total) FILTER (
+                            WHERE placed_at <  now() - make_interval(days => %(d)s)
+                              AND order_status NOT IN ('cancelled','refunded')), 0) AS revenue_prev
+                    FROM orders
+                    WHERE placed_at >= now() - make_interval(days => %(d)s * 2)
+                    """,
+                    {"d": days},
+                )
+                o = cursor.fetchone()
+
+                cursor.execute(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (WHERE u.created_at >= now() - make_interval(days => %(d)s)) AS now_n,
+                        COUNT(*) FILTER (WHERE u.created_at <  now() - make_interval(days => %(d)s)) AS prev_n
+                    FROM app_users u
+                    WHERE u.deleted_at IS NULL
+                      AND u.created_at >= now() - make_interval(days => %(d)s * 2)
+                      AND EXISTS (SELECT 1 FROM user_roles r
+                                  WHERE r.user_id = u.user_id AND r.role_code = 'customer' AND r.revoked_at IS NULL)
+                    """,
+                    {"d": days},
+                )
+                c = cursor.fetchone()
+
+                cursor.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS total,
+                        COUNT(*) FILTER (WHERE first_published_at >= now() - make_interval(days => %(d)s)) AS new_now,
+                        COUNT(*) FILTER (WHERE first_published_at <  now() - make_interval(days => %(d)s)
+                                           AND first_published_at >= now() - make_interval(days => %(d)s * 2)) AS new_prev
+                    FROM designs
+                    WHERE design_status = 'published'
+                    """,
+                    {"d": days},
+                )
+                dsg = cursor.fetchone()
+
+                # One row per day (server time zone), with 0 on days without data
+                cursor.execute(
+                    """
+                    WITH d AS (
+                        SELECT generate_series(
+                            date_trunc('day', now()) - make_interval(days => %(d)s - 1),
+                            date_trunc('day', now()), interval '1 day') AS day
+                    )
+                    SELECT
+                        d.day::date AS day,
+                        COALESCE((SELECT SUM(o.order_total) FROM orders o
+                                  WHERE date_trunc('day', o.placed_at) = d.day
+                                    AND o.order_status NOT IN ('cancelled','refunded')), 0) AS revenue,
+                        (SELECT COUNT(*) FROM orders o WHERE date_trunc('day', o.placed_at) = d.day) AS orders,
+                        (SELECT COUNT(*) FROM app_users u
+                          WHERE date_trunc('day', u.created_at) = d.day AND u.deleted_at IS NULL
+                            AND EXISTS (SELECT 1 FROM user_roles r
+                                        WHERE r.user_id = u.user_id AND r.role_code = 'customer'
+                                          AND r.revoked_at IS NULL)) AS customers
+                    FROM d
+                    ORDER BY d.day
+                    """,
+                    {"d": days},
+                )
+                series = cursor.fetchall()
+
+                # Orders per status in this period (every status is listed)
+                cursor.execute(
+                    """
+                    SELECT order_status, COUNT(*) AS n FROM orders
+                    WHERE placed_at >= now() - make_interval(days => %(d)s)
+                    GROUP BY order_status
+                    """,
+                    {"d": days},
+                )
+                by_status = {status: 0 for status in ORDER_STATUSES}
+                for row in cursor.fetchall():
+                    by_status[row["order_status"]] = row["n"]
+
+                # Last 5 orders with their first item
+                cursor.execute(
+                    """
+                    SELECT
+                        o.order_public_code, o.placed_at, o.order_total, o.order_status,
+                        COALESCE(u.full_name, o.contact_email) AS customer,
+                        i.item_title_snapshot AS title,
+                        i.design_snapshot_json ->> 'preview_url' AS preview_url,
+                        i.product_snapshot_json ->> 'size_code' AS size_code,
+                        i.product_snapshot_json ->> 'color_name' AS color_name,
+                        (SELECT COUNT(*) FROM order_items x WHERE x.order_id = o.order_id) AS item_count
+                    FROM orders o
+                    LEFT JOIN app_users u ON u.user_id = o.user_id
+                    LEFT JOIN LATERAL (
+                        SELECT * FROM order_items x WHERE x.order_id = o.order_id
+                        ORDER BY x.order_item_id LIMIT 1
+                    ) i ON true
+                    ORDER BY o.placed_at DESC, o.order_id DESC
+                    LIMIT 5
+                    """
+                )
+                recent_orders = cursor.fetchall()
+
+                # Top designs by units sold in this period
+                cursor.execute(
+                    """
+                    SELECT
+                        i.design_id,
+                        MAX(i.design_snapshot_json ->> 'title') AS title,
+                        MAX(i.design_snapshot_json ->> 'preview_url') AS preview_url,
+                        SUM(i.quantity)::int AS units,
+                        SUM(i.line_total) AS revenue
+                    FROM order_items i
+                    JOIN orders o ON o.order_id = i.order_id
+                    WHERE o.placed_at >= now() - make_interval(days => %(d)s)
+                      AND o.order_status NOT IN ('cancelled','refunded')
+                    GROUP BY i.design_id
+                    ORDER BY units DESC, revenue DESC
+                    LIMIT 5
+                    """,
+                    {"d": days},
+                )
+                top_products = cursor.fetchall()
+
+                # Recent activity: admin changes from audit_logs and newly placed orders
+                cursor.execute(
+                    """
+                    (SELECT a.action_summary AS text, a.action_time AS at, 'audit' AS kind
+                       FROM audit_logs a ORDER BY a.action_time DESC LIMIT 8)
+                    UNION ALL
+                    (SELECT 'New order ' || o.order_public_code || ' placed by '
+                            || COALESCE(u.full_name, o.contact_email) AS text,
+                            o.placed_at AS at, 'order' AS kind
+                       FROM orders o LEFT JOIN app_users u ON u.user_id = o.user_id
+                      ORDER BY o.placed_at DESC LIMIT 8)
+                    ORDER BY at DESC
+                    LIMIT 8
+                    """
+                )
+                activity = cursor.fetchall()
+
+                # Inventory: only variants that have inventory rows (the others are print on demand)
+                cursor.execute("SELECT EXISTS (SELECT 1 FROM inventory_stock) AS has_rows")
+                has_inventory = cursor.fetchone()["has_rows"]
+                low_stock = []
+                if has_inventory:
+                    cursor.execute(
+                        """
+                        SELECT p.product_name, pv.color_name, pv.size_code,
+                               SUM(s.quantity_on_hand - s.quantity_reserved)::int AS available
+                        FROM inventory_stock s
+                        JOIN product_variants pv ON pv.product_variant_id = s.product_variant_id
+                        JOIN products p ON p.product_id = pv.product_id
+                        GROUP BY p.product_name, pv.product_variant_id, pv.color_name, pv.size_code
+                        HAVING SUM(s.quantity_on_hand - s.quantity_reserved) <= %s
+                        ORDER BY available, p.product_name
+                        LIMIT 5
+                        """,
+                        (LOW_STOCK_THRESHOLD,),
+                    )
+                    low_stock = cursor.fetchall()
+
+                return {
+                    "days": days,
+                    "stats": {
+                        # Revenue is finance data: hidden (null) without finance.view
+                        "revenue": (
+                            {"value": o["revenue_now"], "change_pct": pct_change(o["revenue_now"], o["revenue_prev"])}
+                            if show_money else None
+                        ),
+                        "orders": {"value": o["orders_now"], "change_pct": pct_change(o["orders_now"], o["orders_prev"])},
+                        "customers": {"value": c["now_n"], "change_pct": pct_change(c["now_n"], c["prev_n"])},
+                        # value = all published designs; the % compares designs published in this period with the one before
+                        "designs": {"value": dsg["total"], "new_in_period": dsg["new_now"],
+                                    "change_pct": pct_change(dsg["new_now"], dsg["new_prev"])},
+                    },
+                    "series": [
+                        {"day": r["day"], "revenue": r["revenue"] if show_money else None,
+                         "orders": r["orders"], "customers": r["customers"]}
+                        for r in series
+                    ],
+                    "orders_by_status": by_status,
+                    "recent_orders": recent_orders,
+                    "top_products": [
+                        {**t, "revenue": t["revenue"] if show_money else None} for t in top_products
+                    ],
+                    "activity": activity,
+                    "inventory": {
+                        "has_inventory": has_inventory,
+                        "threshold": LOW_STOCK_THRESHOLD,
+                        "low_stock": low_stock,
+                    },
                 }
 
     except psycopg.Error as e:
